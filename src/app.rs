@@ -10,6 +10,7 @@ use crate::viewer::RenderedView;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
     Rendered,
+    Split,
     Source,
 }
 
@@ -179,6 +180,13 @@ impl App {
                     let theme = source::code_theme(self.theme_pref, &ctx);
                     source::show(ui, doc, theme);
                 }
+                ViewMode::Split => {
+                    let theme = source::code_theme(self.theme_pref, &ctx);
+                    ui.columns(2, |columns| {
+                        self.rendered.show(&mut columns[0], &doc.raw);
+                        source::show(&mut columns[1], doc, theme);
+                    });
+                }
             },
         });
     }
@@ -190,7 +198,8 @@ impl App {
                 Some(Action::Open) => self.open_requested = true,
                 Some(Action::ToggleMode) => {
                     self.mode = match self.mode {
-                        ViewMode::Rendered => ViewMode::Source,
+                        ViewMode::Rendered => ViewMode::Split,
+                        ViewMode::Split => ViewMode::Source,
                         ViewMode::Source => ViewMode::Rendered,
                     };
                     self.error = None;
@@ -267,6 +276,7 @@ impl App {
     fn show_top_bar(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let mut action: Option<Action> = None;
+        let mut mode_clicked = false;
         egui::Panel::top("top_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Open").clicked() {
@@ -293,31 +303,47 @@ impl App {
                     if ui.button(theme_label).clicked() {
                         action = Some(Action::ToggleTheme);
                     }
-                    if ui
-                        .selectable_label(self.mode == ViewMode::Rendered, "Rendered")
-                        .clicked()
-                        && self.mode != ViewMode::Rendered
-                    {
-                        action = Some(Action::ToggleMode);
-                    }
-                    if ui
-                        .selectable_label(self.mode == ViewMode::Source, "Source")
-                        .clicked()
-                        && self.mode != ViewMode::Source
-                    {
-                        action = Some(Action::ToggleMode);
-                    }
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        // Right-to-left layout: add in reverse to read
+                        // Rendered | Split | Source left-to-right. Clicking
+                        // a segment selects that mode directly (Ctrl+E cycles).
+                        if ui
+                            .selectable_label(self.mode == ViewMode::Source, "Source")
+                            .clicked()
+                            && self.mode != ViewMode::Source
+                        {
+                            self.mode = ViewMode::Source;
+                            mode_clicked = true;
+                        }
+                        if ui
+                            .selectable_label(self.mode == ViewMode::Split, "Split")
+                            .clicked()
+                            && self.mode != ViewMode::Split
+                        {
+                            self.mode = ViewMode::Split;
+                            mode_clicked = true;
+                        }
+                        if ui
+                            .selectable_label(self.mode == ViewMode::Rendered, "Rendered")
+                            .clicked()
+                            && self.mode != ViewMode::Rendered
+                        {
+                            self.mode = ViewMode::Rendered;
+                            mode_clicked = true;
+                        }
+                    });
                 });
             });
         });
-        if action.is_some() {
+        if action.is_some() || mode_clicked {
             self.error = None;
         }
         match action {
             Some(Action::Open) => self.open_requested = true,
             Some(Action::ToggleMode) => {
                 self.mode = match self.mode {
-                    ViewMode::Rendered => ViewMode::Source,
+                    ViewMode::Rendered => ViewMode::Split,
+                    ViewMode::Split => ViewMode::Source,
                     ViewMode::Source => ViewMode::Rendered,
                 };
             }
@@ -568,6 +594,78 @@ mod tests {
             });
         harness.run();
         harness.run();
+    }
+
+    #[test]
+    fn ctrl_e_cycles_three_modes() {
+        let doc = temp_path("cycle.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&doc, "# Cycle Heading\n\nbody").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        assert_eq!(app.borrow().mode, ViewMode::Rendered);
+        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::E);
+        harness.run();
+        assert_eq!(app.borrow().mode, ViewMode::Split);
+        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::E);
+        harness.run();
+        assert_eq!(app.borrow().mode, ViewMode::Source);
+        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::E);
+        harness.run();
+        assert_eq!(app.borrow().mode, ViewMode::Rendered);
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn split_button_shows_both_panes() {
+        let doc = temp_path("splitpanes.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&doc, "# Split Heading\n\nbody").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1000.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        harness.get_by_label("Split").click();
+        harness.run();
+        harness.run();
+        // Rendered pane shows the heading; the app is in Split mode.
+        harness.get_by_label("Split Heading");
+        assert_eq!(app.borrow().mode, ViewMode::Split);
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn split_mode_tiny_window_does_not_panic() {
+        let doc = temp_path("splittiny.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&doc, "# Tiny\n\nbody").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        app.borrow_mut().mode = ViewMode::Split;
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(300.0, 200.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run();
+        harness.run();
+        std::fs::remove_file(&doc).unwrap();
     }
 
     #[test]
