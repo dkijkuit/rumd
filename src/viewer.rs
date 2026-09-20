@@ -3,6 +3,21 @@ use std::ops::Range;
 use eframe::egui;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
+/// Target width of the centered rendered-content column.
+pub const COLUMN_WIDTH: f32 = 800.0;
+const COLUMN_MARGIN: f32 = 24.0;
+const COLUMN_MIN: f32 = 320.0;
+const SYNTAX_LIGHT: &str = "InspiredGitHub";
+const SYNTAX_DARK: &str = "base16-ocean.dark";
+
+/// Column width for a given available width: at most [`COLUMN_WIDTH`],
+/// shrinking with the window, never exceeding the available width.
+pub fn column_width(available: f32) -> f32 {
+    COLUMN_WIDTH
+        .min(available - 2.0 * COLUMN_MARGIN)
+        .max(COLUMN_MIN.min(available))
+}
+
 /// Renders markdown into egui widgets. Keeps a parse cache between frames.
 #[derive(Default)]
 pub struct RenderedView {
@@ -27,17 +42,33 @@ impl RenderedView {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                let available = ui.available_width();
+                let width = column_width(available);
+                let full = ui.max_rect();
+                let left = full.left() + (available - width) / 2.0;
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(left, full.top()),
+                    egui::vec2(width, full.height()),
+                );
+                let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect));
                 // Sections are rendered separately so a pending search jump
                 // can scroll to the exact section containing the match. The
                 // cache is documented to support multiple source ids.
                 for (i, range) in sections.iter().enumerate() {
-                    let response = CommonMarkViewer::new()
-                        .show(ui, &mut self.cache, &markdown[range.clone()]);
+                    let viewer = CommonMarkViewer::new()
+                        .default_width(Some(COLUMN_WIDTH as usize))
+                        .syntax_theme_light(SYNTAX_LIGHT)
+                        .syntax_theme_dark(SYNTAX_DARK);
+                    let response =
+                        viewer.show(&mut inner, &mut self.cache, &markdown[range.clone()]);
                     if *pending_jump == Some(i) {
                         *pending_jump = None;
-                        ui.scroll_to_rect(response.response.rect, None);
+                        inner.scroll_to_rect(response.response.rect, None);
                     }
                 }
+                // `new_child` does not reserve space in the parent; without
+                // this the ScrollArea would measure zero content.
+                ui.expand_to_include_rect(inner.min_rect());
             });
     }
 }
@@ -143,5 +174,13 @@ mod tests {
         harness.run();
         harness.run();
         assert!(jump.borrow().is_none());
+    }
+
+    #[test]
+    fn column_width_clamps() {
+        assert_eq!(super::column_width(2000.0), 800.0);
+        assert_eq!(super::column_width(600.0), 552.0); // available - 2*margin
+        assert_eq!(super::column_width(300.0), 300.0); // never exceeds available
+        assert_eq!(super::column_width(100.0), 100.0);
     }
 }

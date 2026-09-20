@@ -200,6 +200,7 @@ impl App {
         self.handle_events(&ctx);
         self.poll_watcher(&ctx);
         self.apply_theme(&ctx);
+        Self::apply_typography(&ctx);
         self.show_error_banner(ui);
         self.show_top_bar(ui);
         self.show_search_bar(ui);
@@ -311,6 +312,19 @@ impl App {
             ctx.set_theme(self.theme_pref);
             self.applied_theme = Some(self.theme_pref);
         }
+    }
+
+    fn apply_typography(ctx: &egui::Context) {
+        ctx.all_styles_mut(|style| {
+            style.text_styles = std::collections::BTreeMap::from([
+                (egui::TextStyle::Small, egui::FontId::proportional(12.0)),
+                (egui::TextStyle::Body, egui::FontId::proportional(16.0)),
+                (egui::TextStyle::Button, egui::FontId::proportional(14.0)),
+                (egui::TextStyle::Heading, egui::FontId::proportional(28.0)),
+                (egui::TextStyle::Monospace, egui::FontId::monospace(14.0)),
+            ]);
+            style.spacing.item_spacing = egui::vec2(8.0, 10.0);
+        });
     }
 
     fn refresh(&mut self) {
