@@ -54,20 +54,17 @@ impl FileWatcher {
     pub fn spawn(path: &Path) -> notify::Result<Self> {
         let (tx, rx) = channel();
         let target = path.to_path_buf();
-        let mut watcher = notify::recommended_watcher(
-            move |res: Result<notify::Event, notify::Error>| {
+        let mut watcher =
+            notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
                 if let Ok(event) = res {
                     let touches_target = event.paths.iter().any(|p| p == &target);
-                    let kind_matches = matches!(
-                        event.kind,
-                        EventKind::Modify(_) | EventKind::Create(_)
-                    );
+                    let kind_matches =
+                        matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_));
                     if touches_target && kind_matches {
                         let _ = tx.send(());
                     }
                 }
-            },
-        )?;
+            })?;
         let watch_target = path.parent().unwrap_or(path).to_path_buf();
         watcher.watch(&watch_target, RecursiveMode::NonRecursive)?;
         Ok(FileWatcher {
@@ -140,14 +137,22 @@ mod tests {
     fn debounce_not_ready_while_recent() {
         let now = Instant::now();
         let event_at = now - Duration::from_millis(50);
-        assert!(!debounce_ready(Some(event_at), now, Duration::from_millis(100)));
+        assert!(!debounce_ready(
+            Some(event_at),
+            now,
+            Duration::from_millis(100)
+        ));
     }
 
     #[test]
     fn debounce_ready_after_quiet_period() {
         let now = Instant::now();
         let event_at = now - Duration::from_millis(150);
-        assert!(debounce_ready(Some(event_at), now, Duration::from_millis(100)));
+        assert!(debounce_ready(
+            Some(event_at),
+            now,
+            Duration::from_millis(100)
+        ));
     }
 
     use std::sync::mpsc::TryRecvError;

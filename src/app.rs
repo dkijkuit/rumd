@@ -95,7 +95,18 @@ impl App {
     /// Load a document, replacing the current one. On failure the previous
     /// document stays visible and the error banner explains what happened.
     pub fn open_path(&mut self, path: &Path) {
-        match Document::load(path) {
+        // Canonicalize so the stored path is absolute and matches the paths
+        // notify reports in events (it canonicalizes too), and so refresh
+        // and auto-reload resolve correctly after the working directory
+        // changes below.
+        let canonical = match path.canonicalize() {
+            Ok(p) => p,
+            Err(e) => {
+                self.error = Some(format!("Failed to open {}: {}", path.display(), e));
+                return;
+            }
+        };
+        match Document::load(&canonical) {
             Ok(doc) => {
                 // egui resolves relative image paths against the process
                 // working directory, so follow the document.
@@ -103,7 +114,7 @@ impl App {
                     let _ = std::env::set_current_dir(dir);
                 }
                 self.error = None;
-                match FileWatcher::spawn(path) {
+                match FileWatcher::spawn(&canonical) {
                     Ok(w) => {
                         self.watcher = Some(w);
                         self.watcher_failed = false;
@@ -127,21 +138,26 @@ impl App {
     }
 
     /// Drain watcher events; reload once the file has been quiet for
-    /// RELOAD_DEBOUNCE.
-    fn poll_watcher(&mut self) {
+    /// RELOAD_DEBOUNCE. The file system watcher cannot wake the event loop,
+    /// so while a change is pending this schedules repaints itself.
+    fn poll_watcher(&mut self, ctx: &egui::Context) {
         let mut changed = false;
         if let Some(w) = &self.watcher {
             while let Ok(()) = w.events.try_recv() {
                 changed = true;
             }
         }
-        if changed && self.changed_at.is_none() {
+        if changed {
             self.changed_at = Some(Instant::now());
         }
-        if debounce_ready(self.changed_at, Instant::now(), RELOAD_DEBOUNCE) {
-            self.changed_at = None;
-            if let Some(path) = self.doc.as_ref().map(|d| d.path.clone()) {
-                self.open_path(&path);
+        if let Some(t) = self.changed_at {
+            if debounce_ready(Some(t), Instant::now(), RELOAD_DEBOUNCE) {
+                self.changed_at = None;
+                if let Some(path) = self.doc.as_ref().map(|d| d.path.clone()) {
+                    self.open_path(&path);
+                }
+            } else {
+                ctx.request_repaint_after(RELOAD_DEBOUNCE - t.elapsed());
             }
         }
     }
@@ -149,7 +165,7 @@ impl App {
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.handle_events(&ctx);
-        self.poll_watcher();
+        self.poll_watcher(&ctx);
         self.apply_theme(&ctx);
         self.show_error_banner(ui);
         self.show_top_bar(ui);
@@ -225,11 +241,13 @@ impl App {
     }
 
     fn refresh(&mut self) {
-        if let Some(doc) = &self.doc {
-            let path = doc.path.clone();
-            self.open_path(&path);
+        match &self.doc {
+            Some(doc) => {
+                let path = doc.path.clone();
+                self.open_path(&path);
+            }
+            None => self.error = None,
         }
-        self.error = None;
     }
 
     fn show_error_banner(&mut self, ui: &mut egui::Ui) {
@@ -338,11 +356,26 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use std::sync::Mutex;
 
     use egui_kittest::{Harness, kittest::Queryable};
 
     fn temp_path(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("rumd_app_{}_{}", std::process::id(), name))
+    }
+
+    /// open_path changes the process working directory (for relative image
+    /// resolution), so harness tests that open files serialize on this lock.
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+    fn min_repaint_delay(harness: &Harness) -> std::time::Duration {
+        harness
+            .output()
+            .viewport_output
+            .values()
+            .map(|v| v.repaint_delay)
+            .min()
+            .unwrap_or(std::time::Duration::MAX)
     }
 
     // Each UI test shares its App with the harness closure through an Rc so
@@ -422,6 +455,8 @@ mod tests {
     #[test]
     fn open_failure_shows_error_banner_keeps_previous_doc() {
         let good = temp_path("good.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
         std::fs::write(&good, "# Keep Me").unwrap();
         let app = Rc::new(RefCell::new(App::new(None)));
         app.borrow_mut().open_path(&good);
@@ -446,6 +481,8 @@ mod tests {
     #[test]
     fn lossy_badge_appears_for_invalid_utf8() {
         let bad = temp_path("bad.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
         std::fs::write(&bad, [b'#', b' ', 0xFF]).unwrap();
         let app = Rc::new(RefCell::new(App::new(None)));
         app.borrow_mut().open_path(&bad);
@@ -463,6 +500,8 @@ mod tests {
     #[test]
     fn mode_toggle_button_switches_views() {
         let doc = temp_path("toggle.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
         std::fs::write(&doc, "# T5 Heading\n\nbody text").unwrap();
         let app = Rc::new(RefCell::new(App::new(None)));
         app.borrow_mut().open_path(&doc);
@@ -488,6 +527,8 @@ mod tests {
     #[test]
     fn theme_toggle_flips_button_and_keeps_view() {
         let doc = temp_path("theme.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
         std::fs::write(&doc, "# Themed Doc").unwrap();
         let app = Rc::new(RefCell::new(App::new(None)));
         app.borrow_mut().open_path(&doc);
@@ -540,6 +581,8 @@ mod tests {
     #[test]
     fn dropping_directory_shows_error_keeps_doc() {
         let good = temp_path("drop_keep.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
         std::fs::write(&good, "# Still Here").unwrap();
         let app = Rc::new(RefCell::new(App::new(None)));
         app.borrow_mut().open_path(&good);
@@ -561,6 +604,8 @@ mod tests {
     #[test]
     fn auto_reload_updates_rendered_view() {
         let path = temp_path("reload.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
         std::fs::write(&path, "# First Heading").unwrap();
         let app = Rc::new(RefCell::new(App::new(None)));
         app.borrow_mut().open_path(&path);
@@ -584,6 +629,144 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         assert!(updated, "auto-reload never updated the view");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn refresh_keeps_error_when_file_missing() {
+        let path = temp_path("refresh.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&path, "# Gone Soon").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&path);
+        std::fs::remove_file(&path).unwrap();
+
+        app.borrow_mut().refresh();
+        let error = app.borrow().error.clone();
+        assert!(
+            error
+                .as_deref()
+                .is_some_and(|e| e.contains("Failed to open")),
+            "expected refresh failure to be reported, got {error:?}"
+        );
+        // The previously loaded document stays visible.
+        assert!(app.borrow().doc.is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn watcher_failure_shows_banner_once() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // Root bypasses directory permissions; the test cannot simulate
+        // watch failure there.
+        if std::fs::metadata("/").unwrap().uid() == 0 {
+            return;
+        }
+        let _cwd = CWD_LOCK.lock().unwrap();
+        let dir = temp_path("watchfail_dir");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("w.md");
+        std::fs::write(&file, "# Watch Fail").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&file);
+        {
+            let app = app.borrow();
+            assert!(app.watcher_failed);
+            assert!(app.doc.is_some(), "document must still load");
+            let error = app.error.clone().unwrap_or_default();
+            assert!(
+                error.contains("Auto-reload unavailable"),
+                "expected one-time info banner, got {error:?}"
+            );
+        }
+
+        // A later refresh must not repeat the message.
+        app.borrow_mut().refresh();
+        assert!(app.borrow().error.is_none());
+        assert!(app.borrow().watcher_failed);
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn auto_reload_fires_for_relative_path_open() {
+        let _cwd = CWD_LOCK.lock().unwrap();
+        let dir = temp_path("relreload_dir");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("rel.md");
+        std::fs::write(&file, "# First Heading").unwrap();
+
+        std::env::set_current_dir(&dir).unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(Path::new("rel.md"));
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        harness.get_by_label("First Heading");
+
+        std::fs::write(&file, "# Reloaded Heading").unwrap();
+        let mut updated = false;
+        for _ in 0..100 {
+            harness.run_steps(1);
+            if harness.query_by_label("Reloaded Heading").is_some() {
+                updated = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            updated,
+            "auto-reload never updated the view for a relative open path"
+        );
+        std::fs::remove_file(&file).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn watcher_event_schedules_repaint_wakeup() {
+        let path = temp_path("wake.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&path, "# Wake").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&path);
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+
+        std::fs::write(&path, "# Wake 2").unwrap();
+        // Frame until the watcher event has been drained into changed_at,
+        // then the very next frame must schedule a wakeup within the
+        // debounce window while it waits to reload.
+        let mut drained = false;
+        for _ in 0..100 {
+            harness.run_steps(1);
+            if app.borrow().changed_at.is_some() {
+                drained = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(drained, "watcher event never reached the app");
+        harness.run_steps(1);
+        let delay = min_repaint_delay(&harness);
+        assert!(
+            delay <= std::time::Duration::from_millis(200),
+            "pending reload did not schedule a repaint wakeup, delay {delay:?}"
+        );
         std::fs::remove_file(&path).unwrap();
     }
 }

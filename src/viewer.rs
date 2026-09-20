@@ -13,7 +13,14 @@ impl RenderedView {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, markdown: &str) {
-        CommonMarkViewer::new().show(ui, &mut self.cache, markdown);
+        // CentralPanel clips overflow, so long documents need a ScrollArea.
+        // (egui_commonmark's show_scrollable assumes static markdown and
+        // requires manual cache clearing on every change.)
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                CommonMarkViewer::new().show(ui, &mut self.cache, markdown)
+            });
     }
 }
 
@@ -49,5 +56,29 @@ mod tests {
                 .build_ui(move |ui| view.show(ui, &owned));
             harness.run();
         }
+    }
+
+    #[test]
+    fn long_document_is_scrollable() {
+        let mut md = String::new();
+        for i in 0..80 {
+            md.push_str(&format!("Paragraph {i} text.\n\n"));
+        }
+        let mut view = RenderedView::new();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 400.0))
+            .build_ui(move |ui| view.show(ui, &md));
+        harness.run();
+        harness.run();
+        let bars = harness
+            .query_all_by_role(egui::accesskit::Role::ScrollBar)
+            .count();
+        let views = harness
+            .query_all_by_role(egui::accesskit::Role::ScrollView)
+            .count();
+        assert!(
+            bars + views > 0,
+            "long document produced no scrollable area (bars {bars}, views {views})"
+        );
     }
 }
