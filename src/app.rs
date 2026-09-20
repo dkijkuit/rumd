@@ -144,7 +144,9 @@ pub struct App {
     pub search: search::SearchState,
     /// Mirrored from `ctx.zoom_factor()` every frame (egui's native zoom).
     pub zoom: f32,
-    pending_source_match: Option<std::ops::Range<usize>>,
+    /// Match currently highlighted in the source view; persists while the
+    /// find bar stays open.
+    source_highlight: Option<std::ops::Range<usize>>,
     pub sections: Vec<std::ops::Range<usize>>,
     pending_render_jump: Option<usize>,
     /// Where prefs are persisted; `None` (tests) disables writing.
@@ -172,7 +174,7 @@ impl App {
             changed_at: None,
             search: search::SearchState::default(),
             zoom: 1.0,
-            pending_source_match: None,
+            source_highlight: None,
             sections: Vec::new(),
             pending_render_jump: None,
             prefs_file: None,
@@ -273,16 +275,22 @@ impl App {
         if self.search.current >= self.search.matches.len() {
             self.search.current = self.search.matches.len().saturating_sub(1);
         }
-        self.pending_source_match = None;
+        self.source_highlight = None;
         self.pending_render_jump = None;
     }
 
     fn queue_jumps(&mut self) {
-        self.pending_source_match = self.search.current_match().cloned();
+        self.source_highlight = self.search.current_match().cloned();
         self.pending_render_jump = self
             .search
             .current_match()
             .and_then(|m| search::section_containing(&self.sections, m.start));
+    }
+
+    /// Close the find bar and forget the on-screen highlight.
+    fn close_search(&mut self) {
+        self.search.open = false;
+        self.source_highlight = None;
     }
 
     /// Opt in to preference persistence (main only; tests leave `None`).
@@ -385,18 +393,18 @@ impl App {
                 }
                 ViewMode::Source => {
                     let theme = source::code_theme(self.theme_pref, &ctx);
-                    let jump = self.pending_source_match.take();
-                    source::show(ui, &doc.raw, theme, jump);
+                    let highlight = self.source_highlight.clone();
+                    source::show(ui, &doc.raw, theme, highlight);
                 }
                 ViewMode::Split => {
                     let theme = source::code_theme(self.theme_pref, &ctx);
                     let sections = self.sections.clone();
                     let mut render_jump = self.pending_render_jump;
-                    let source_jump = self.pending_source_match.take();
+                    let highlight = self.source_highlight.clone();
                     ui.columns(2, |columns| {
                         self.rendered
                             .show(&mut columns[0], &doc.raw, &sections, &mut render_jump);
-                        source::show(&mut columns[1], &doc.raw, theme, source_jump);
+                        source::show(&mut columns[1], &doc.raw, theme, highlight);
                     });
                     self.pending_render_jump = render_jump;
                 }
@@ -441,7 +449,7 @@ impl App {
                 )
             });
             if esc {
-                self.search.open = false;
+                self.close_search();
             } else if enter {
                 self.search.step(if shift { -1 } else { 1 });
                 self.queue_jumps();
@@ -654,7 +662,7 @@ impl App {
                     self.queue_jumps();
                 }
                 if ui.button("Close").clicked() {
-                    self.search.open = false;
+                    self.close_search();
                 }
             });
         });
@@ -1079,7 +1087,7 @@ mod tests {
             a.search.step(1);
             a.queue_jumps();
         }
-        assert!(app.borrow().pending_source_match.is_some());
+        assert!(app.borrow().source_highlight.is_some());
         let app_for_ui = app.clone();
         let mut harness = Harness::builder()
             .with_size(egui::vec2(800.0, 600.0))
@@ -1088,8 +1096,8 @@ mod tests {
             });
         harness.run_steps(3);
         assert!(
-            app.borrow().pending_source_match.is_none(),
-            "pending jump must be consumed on render"
+            app.borrow().source_highlight.is_some(),
+            "highlight persists while the find bar stays open"
         );
         std::fs::remove_file(&doc).unwrap();
     }
@@ -1267,8 +1275,8 @@ mod tests {
             "stale rendered jump dropped on reload"
         );
         assert!(
-            app.borrow().pending_source_match.is_none(),
-            "stale source jump dropped on reload"
+            app.borrow().source_highlight.is_none(),
+            "stale source highlight dropped on reload"
         );
         std::fs::remove_file(&doc).unwrap();
     }

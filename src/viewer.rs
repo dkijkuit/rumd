@@ -235,6 +235,38 @@ mod tests {
     }
 
     #[test]
+    fn content_is_centered_in_window() {
+        // A column-filling paragraph (wraps at the column edge) must land
+        // in the horizontal center of the window.
+        let md = "a very long paragraph ".repeat(60);
+        let sections = crate::search::split_sections(&md);
+        let mut view = RenderedView::new();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1000.0, 600.0))
+            .build_ui(move |ui| {
+                view.show(ui, &md, &sections, &mut None);
+            });
+        harness.run();
+        harness.run();
+        let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
+        for clipped in harness.output().shapes.iter() {
+            if let egui::Shape::Text(t) = &clipped.shape {
+                min_x = min_x.min(t.galley.rect.left() + t.pos.x);
+                max_x = max_x.max(t.galley.rect.right() + t.pos.x);
+            }
+        }
+        assert!(
+            min_x < f32::MAX && max_x > f32::MIN,
+            "no text painted"
+        );
+        let center = (min_x + max_x) / 2.0;
+        assert!(
+            (center - 500.0).abs() <= 10.0,
+            "content center {center} must be within 10px of the window center 500 (bounds {min_x}..{max_x})"
+        );
+    }
+
+    #[test]
     fn text_wraps_at_column_width_not_constant() {
         // In a narrow window the column is narrower than COLUMN_WIDTH; the
         // viewer must wrap text at the actual column width, not the

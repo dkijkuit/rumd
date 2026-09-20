@@ -55,7 +55,7 @@ pub fn code_theme(pref: egui::ThemePreference, ctx: &egui::Context) -> ColorThem
     }
 }
 
-pub fn show(ui: &mut egui::Ui, raw: &str, theme: ColorTheme, jump: Option<Range<usize>>) {
+pub fn show(ui: &mut egui::Ui, raw: &str, theme: ColorTheme, highlight: Option<Range<usize>>) {
     let mut buffer = ReadOnlyBuffer(raw);
     let (output, _tokens) = CodeEditor::default()
         .id_source("rumd_source")
@@ -67,26 +67,33 @@ pub fn show(ui: &mut egui::Ui, raw: &str, theme: ColorTheme, jump: Option<Range<
         .vscroll(true)
         .show(ui, &mut buffer, &markdown_syntax());
 
-    // Select and scroll to the searched match. The state is stored back
-    // under the TextEdit's own widget id (taken from its output), and the
-    // editor is focused: egui paints text selections only when the TextEdit
-    // has focus, and egui_code_editor's built-in cursor-follow scroll also
-    // gates on focus — without it a jump would produce no visible feedback.
-    if let Some(byte_range) = jump {
+    // Highlight the searched match ourselves: egui collapses any selection
+    // stored in the TextEdit state back to a bare cursor on load, so a
+    // stored selection can never survive a frame, let alone paint. A
+    // translucent overlay rect over the match glyphs is the reliable way
+    // to show it. Focus keeps egui_code_editor's cursor-follow scroll
+    // bringing the match into view.
+    if let Some(byte_range) = highlight {
         let start = search::char_index_of_byte(raw, byte_range.start);
         let end = search::char_index_of_byte(raw, byte_range.end);
-        let start_cc = egui::text::CCursor::new(egui::text::CharIndex(start));
         let end_cc = egui::text::CCursor::new(egui::text::CharIndex(end));
+
+        // Park the cursor at the match end so the editor scrolls to it.
         let mut state = output.state;
         state
             .cursor
-            .set_char_range(Some(egui::text::CCursorRange::two(start_cc, end_cc)));
-        let response = &output.response.response;
-        state.store(ui.ctx(), response.id);
-        response.request_focus();
-        let local = output.galley.pos_from_cursor(start_cc);
-        let world = local.translate(output.galley_pos.to_vec2());
-        ui.scroll_to_rect(world, None);
+            .set_char_range(Some(egui::text::CCursorRange::one(end_cc)));
+        state.store(ui.ctx(), output.response.response.id);
+        output.response.response.request_focus();
+
+        let start_pos = output.galley.pos_from_cursor(egui::text::CCursor::new(
+            egui::text::CharIndex(start),
+        ));
+        let end_pos = output.galley.pos_from_cursor(end_cc);
+        let rect = egui::Rect::from_min_max(start_pos.min, end_pos.max)
+            .translate(output.galley_pos.to_vec2());
+        ui.painter()
+            .rect_filled(rect, 2.0, ui.visuals().selection.bg_fill);
     }
 }
 
@@ -172,5 +179,34 @@ mod tests {
             harness.ctx.memory(|m| m.focused().is_some()),
             "jump must focus the source editor so the selection paints"
         );
+    }
+
+    #[test]
+    fn source_jump_paints_a_persistent_highlight() {
+        use egui_kittest::Harness;
+        let raw = "line one\nneedle here\nline two\nneedle again\n".to_string();
+        let jump = crate::search::find_matches(&raw, "needle")[0].clone();
+        let ctx = egui::Context::default();
+        let theme = code_theme(egui::ThemePreference::Dark, &ctx);
+        let raw2 = raw.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 400.0))
+            .build_ui(move |ui| show(ui, &raw2, theme, Some(jump.clone())));
+        let expected_fill = egui::Style::default().visuals.selection.bg_fill;
+        for frame in 0..3 {
+            harness.run();
+            let highlight_rects = harness
+                .output()
+                .shapes
+                .iter()
+                .filter(|clipped| {
+                    matches!(&clipped.shape, egui::Shape::Rect(r) if r.fill == expected_fill)
+                })
+                .count();
+            assert!(
+                highlight_rects >= 1,
+                "frame {frame}: the match highlight must be painted"
+            );
+        }
     }
 }
