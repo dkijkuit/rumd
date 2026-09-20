@@ -1,3 +1,4 @@
+mod document;
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
