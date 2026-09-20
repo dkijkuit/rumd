@@ -57,6 +57,14 @@ pub fn first_drop(paths: &[PathBuf]) -> Option<PathBuf> {
 
 const OPEN_FILTER_NAME: &str = "Markdown";
 const OPEN_FILTER_EXTS: &[&str] = &["md", "markdown", "mdown", "txt"];
+
+/// The real open-file dialog; injectable so headless tests never block.
+fn rfd_open_dialog() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .add_filter(OPEN_FILTER_NAME, OPEN_FILTER_EXTS)
+        .pick_file()
+}
+
 const EMPTY_HINT: &str = "Drop a .md file here or press Ctrl+O";
 const LOSSY_BADGE: &str = "not valid UTF-8";
 const SEARCH_FIELD: &str = "rumd_search_field";
@@ -141,6 +149,8 @@ pub struct App {
     pending_render_jump: Option<usize>,
     /// Where prefs are persisted; `None` (tests) disables writing.
     prefs_file: Option<PathBuf>,
+    /// Open-file dialog hook (overridden by tests to avoid blocking).
+    open_dialog: Box<dyn Fn() -> Option<PathBuf>>,
     saved_theme: Option<egui::ThemePreference>,
     saved_mode: Option<ViewMode>,
     saved_zoom: f32,
@@ -166,6 +176,7 @@ impl App {
             sections: Vec::new(),
             pending_render_jump: None,
             prefs_file: None,
+            open_dialog: Box::new(rfd_open_dialog),
             saved_theme: None,
             saved_mode: None,
             saved_zoom: 1.0,
@@ -349,9 +360,13 @@ impl App {
         self.show_search_bar(ui);
         self.update_window_title(&ctx);
 
-        egui::CentralPanel::default().show(ui, |ui| match &self.doc {
-            None => self.show_empty_state(ui),
-            Some(doc) => match self.mode {
+        egui::CentralPanel::default().show(ui, |ui| {
+            if self.doc.is_none() {
+                self.show_empty_state(ui);
+                return;
+            }
+            let doc = self.doc.as_ref().unwrap();
+            match self.mode {
                 ViewMode::Rendered => {
                     self.rendered
                         .show(ui, &doc.raw, &self.sections, &mut self.pending_render_jump);
@@ -373,7 +388,7 @@ impl App {
                     });
                     self.pending_render_jump = render_jump;
                 }
-            },
+            }
         });
     }
 
@@ -434,10 +449,7 @@ impl App {
 
         if self.open_requested {
             self.open_requested = false;
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter(OPEN_FILTER_NAME, OPEN_FILTER_EXTS)
-                .pick_file()
-            {
+            if let Some(path) = (self.open_dialog)() {
                 self.open_path(&path);
             }
         }
@@ -488,7 +500,12 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(8, 4))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.colored_label(ui.visuals().warn_fg_color, message);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("Close").clicked() {
+                                self.error = None;
+                            }
+                            ui.colored_label(ui.visuals().warn_fg_color, message);
+                        });
                     });
             });
         }
@@ -500,11 +517,16 @@ impl App {
         let mut mode_clicked = false;
         egui::Panel::top("top_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("Open").clicked() {
+                if ui
+                    .button("Open")
+                    .on_hover_text("Open a file (Ctrl+O)")
+                    .clicked()
+                {
                     action = Some(Action::Open);
                 }
                 if let Some(doc) = &self.doc {
-                    ui.strong(doc.file_name());
+                    ui.strong(doc.file_name())
+                        .on_hover_text(doc.path.display().to_string());
                     if doc.lossy {
                         ui.label(
                             egui::RichText::new(LOSSY_BADGE)
@@ -514,14 +536,22 @@ impl App {
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Refresh").clicked() {
+                    if ui
+                        .button("Refresh")
+                        .on_hover_text("Reload from disk (F5)")
+                        .clicked()
+                    {
                         action = Some(Action::Refresh);
                     }
                     let theme_label = match ctx.theme() {
                         egui::Theme::Dark => "Light theme",
                         egui::Theme::Light => "Dark theme",
                     };
-                    if ui.button(theme_label).clicked() {
+                    if ui
+                        .button(theme_label)
+                        .on_hover_text("Switch theme (Ctrl+D)")
+                        .clicked()
+                    {
                         action = Some(Action::ToggleTheme);
                     }
                     egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -530,6 +560,7 @@ impl App {
                         // a segment selects that mode directly (Ctrl+E cycles).
                         if ui
                             .selectable_label(self.mode == ViewMode::Source, "Source")
+                            .on_hover_text("Cycle view mode (Ctrl+E)")
                             .clicked()
                             && self.mode != ViewMode::Source
                         {
@@ -538,6 +569,7 @@ impl App {
                         }
                         if ui
                             .selectable_label(self.mode == ViewMode::Split, "Split")
+                            .on_hover_text("Cycle view mode (Ctrl+E)")
                             .clicked()
                             && self.mode != ViewMode::Split
                         {
@@ -546,6 +578,7 @@ impl App {
                         }
                         if ui
                             .selectable_label(self.mode == ViewMode::Rendered, "Rendered")
+                            .on_hover_text("Cycle view mode (Ctrl+E)")
                             .clicked()
                             && self.mode != ViewMode::Rendered
                         {
@@ -615,9 +648,18 @@ impl App {
         });
     }
 
-    fn show_empty_state(&self, ui: &mut egui::Ui) {
+    fn show_empty_state(&mut self, ui: &mut egui::Ui) {
         ui.centered_and_justified(|ui| {
-            ui.label(EMPTY_HINT);
+            ui.vertical_centered(|ui| {
+                ui.add_space(48.0);
+                ui.label(egui::RichText::new("rumd").size(56.0).weak());
+                ui.add_space(8.0);
+                ui.label(EMPTY_HINT);
+                ui.add_space(16.0);
+                if ui.button("Open…").clicked() {
+                    self.open_requested = true;
+                }
+            });
         });
     }
 
@@ -1122,6 +1164,58 @@ mod tests {
             "ctrl+0 must reset zoom, zoom={}",
             app.borrow().zoom
         );
+    }
+
+    #[test]
+    fn empty_state_offers_open_button() {
+        let app = Rc::new(RefCell::new(App::new(None)));
+        // Stub the dialog: the real rfd call would block headless.
+        let dialog_used = Rc::new(std::cell::Cell::new(false));
+        {
+            let dialog_used = dialog_used.clone();
+            app.borrow_mut().open_dialog = Box::new(move || {
+                dialog_used.set(true);
+                None
+            });
+        }
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run();
+        harness.get_by_label("rumd");
+        harness.get_by_label("Open…").click();
+        harness.run();
+        assert!(
+            dialog_used.get(),
+            "Open… button must reach the dialog hook"
+        );
+    }
+
+    #[test]
+    fn error_banner_close_clears_message() {
+        let good = temp_path("banner.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&good, "# Banner Doc").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&good);
+        app.borrow_mut()
+            .open_path(Path::new("/nonexistent/rumd/missing.md"));
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run();
+        assert!(harness.query_by_label_contains("Failed to open").is_some());
+        harness.get_by_label("Close").click();
+        harness.run();
+        assert!(app.borrow().error.is_none(), "Close must clear the error");
+        std::fs::remove_file(&good).unwrap();
     }
 
     #[test]
