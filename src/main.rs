@@ -1,5 +1,6 @@
 mod app;
 mod document;
+mod search;
 mod source;
 mod viewer;
 
