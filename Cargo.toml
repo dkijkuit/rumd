@@ -13,7 +13,7 @@ rfd = "0.17"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 [dev-dependencies]
-egui_kittest = "0.36"
+egui_kittest = { version = "0.36", features = ["snapshot", "wgpu"] }
 
 [profile.release]
 strip = true

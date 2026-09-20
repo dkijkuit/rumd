@@ -3,9 +3,9 @@ use std::ops::Range;
 use eframe::egui;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
-/// Target width of the centered rendered-content column.
-pub const COLUMN_WIDTH: f32 = 800.0;
-const COLUMN_MARGIN: f32 = 24.0;
+/// Target width of the centered rendered-content column (~70 characters).
+pub const COLUMN_WIDTH: f32 = 660.0;
+const COLUMN_MARGIN: f32 = 40.0;
 const COLUMN_MIN: f32 = 320.0;
 const SYNTAX_LIGHT: &str = "InspiredGitHub";
 const SYNTAX_DARK: &str = "base16-ocean.dark";
@@ -201,8 +201,8 @@ mod tests {
 
     #[test]
     fn column_width_clamps() {
-        assert_eq!(super::column_width(2000.0), 800.0);
-        assert_eq!(super::column_width(600.0), 552.0); // available - 2*margin
+        assert_eq!(super::column_width(2000.0), 660.0);
+        assert_eq!(super::column_width(600.0), 520.0); // available - 2*margin
         assert_eq!(super::column_width(300.0), 300.0); // never exceeds available
         assert_eq!(super::column_width(100.0), 100.0);
     }

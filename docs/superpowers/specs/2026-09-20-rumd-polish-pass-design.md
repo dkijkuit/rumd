@@ -168,9 +168,12 @@ value outside 0.2–5.0 clamps on load.
 ### 5. Centered column + typography
 
 - Rendered content sits in a centered inner Ui of width
-  `min(800, available_width − 48)` (built with `UiBuilder::max_rect`),
-  with the viewer's `default_width` set to match so text wraps at the
-  column edge. Source view keeps the full window width.
+  `min(660, available_width − 80)` (~70 characters; raised from an
+  initial 800px after visual review showed the column read as
+  full-width at typical window sizes), built with `UiBuilder::max_rect`,
+  with the viewer's `default_width` set to the actual column width so
+  text wraps at the column edge. Source view keeps the full window
+  width.
 - Text style sizes raised for readability: Body ≈ 16, Heading ≈ 28,
   Monospace ≈ 14, Button ≈ 14 (final values eyeballed during
   implementation against both themes).
