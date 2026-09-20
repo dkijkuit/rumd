@@ -17,10 +17,11 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "rumd",
         options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
             let mut app = app::App::new(path);
             app.set_prefs_file(app::prefs_path());
             app.load_prefs();
+            app.apply_zoom_to_ctx(&cc.egui_ctx);
             Ok(Box::new(app))
         }),
     )

@@ -68,8 +68,10 @@ pub fn show(ui: &mut egui::Ui, raw: &str, theme: ColorTheme, jump: Option<Range<
         .show(ui, &mut buffer, &markdown_syntax());
 
     // Select and scroll to the searched match. The state is stored back
-    // under the TextEdit's own widget id (taken from its output), so it
-    // reloads next frame and the selection appears.
+    // under the TextEdit's own widget id (taken from its output), and the
+    // editor is focused: egui paints text selections only when the TextEdit
+    // has focus, and egui_code_editor's built-in cursor-follow scroll also
+    // gates on focus — without it a jump would produce no visible feedback.
     if let Some(byte_range) = jump {
         let start = search::char_index_of_byte(raw, byte_range.start);
         let end = search::char_index_of_byte(raw, byte_range.end);
@@ -79,8 +81,9 @@ pub fn show(ui: &mut egui::Ui, raw: &str, theme: ColorTheme, jump: Option<Range<
         state
             .cursor
             .set_char_range(Some(egui::text::CCursorRange::two(start_cc, end_cc)));
-        let id = output.response.response.id;
-        state.store(ui.ctx(), id);
+        let response = &output.response.response;
+        state.store(ui.ctx(), response.id);
+        response.request_focus();
         let local = output.galley.pos_from_cursor(start_cc);
         let world = local.translate(output.galley_pos.to_vec2());
         ui.scroll_to_rect(world, None);
@@ -151,5 +154,23 @@ mod tests {
             .build_ui(move |ui| show(ui, raw, theme, Some(jump.clone())));
         harness.run();
         harness.run();
+    }
+
+    #[test]
+    fn source_jump_focuses_the_editor_for_visible_feedback() {
+        use egui_kittest::Harness;
+        let raw = "line one\nneedle here\n";
+        let jump = crate::search::find_matches(raw, "needle")[0].clone();
+        let ctx = egui::Context::default();
+        let theme = code_theme(egui::ThemePreference::Dark, &ctx);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 400.0))
+            .build_ui(move |ui| show(ui, raw, theme, Some(jump.clone())));
+        harness.run();
+        harness.run();
+        assert!(
+            harness.ctx.memory(|m| m.focused().is_some()),
+            "jump must focus the source editor so the selection paints"
+        );
     }
 }

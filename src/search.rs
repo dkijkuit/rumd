@@ -33,8 +33,14 @@ pub fn find_matches(text: &str, query: &str) -> Vec<Range<usize>> {
 }
 
 /// Convert a byte offset into a char index (egui cursors are char-based).
+/// Offsets that are not char boundaries are floored to the nearest one,
+/// so stale offsets from earlier document revisions cannot panic.
 pub fn char_index_of_byte(text: &str, byte: usize) -> usize {
-    text[..byte.min(text.len())].chars().count()
+    let mut byte = byte.min(text.len());
+    while !text.is_char_boundary(byte) {
+        byte -= 1;
+    }
+    text[..byte].chars().count()
 }
 
 /// Split `text` into sections for rendered-view jumps.
@@ -166,6 +172,13 @@ mod tests {
         let text = "éx abc";
         assert_eq!(char_index_of_byte(text, 3), 2);
         assert_eq!(char_index_of_byte(text, 100), text.chars().count());
+    }
+
+    #[test]
+    fn char_index_of_byte_floors_to_char_boundary() {
+        // Byte 1 is inside 'é'; a stale offset must not panic.
+        assert_eq!(char_index_of_byte("éx", 1), 0);
+        assert_eq!(char_index_of_byte("éx", 2), 1);
     }
 
     #[test]

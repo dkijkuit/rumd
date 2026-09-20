@@ -265,12 +265,16 @@ impl App {
 
     /// Recompute search matches against the current document and clamp
     /// the current index (used on query edits, open, and reloads).
+    /// Pending jumps queued against the previous text are dropped — the
+    /// spec forbids scrolling to a stale target.
     pub fn recompute_matches(&mut self) {
         let text = self.doc.as_ref().map(|d| d.raw.as_str()).unwrap_or("");
         self.search.matches = search::find_matches(text, &self.search.query);
         if self.search.current >= self.search.matches.len() {
             self.search.current = self.search.matches.len().saturating_sub(1);
         }
+        self.pending_source_match = None;
+        self.pending_render_jump = None;
     }
 
     fn queue_jumps(&mut self) {
@@ -324,6 +328,14 @@ impl App {
             self.saved_mode = Some(self.mode);
             self.saved_zoom = self.zoom;
         }
+    }
+
+    /// Apply the loaded zoom to the egui context (call once at startup,
+    /// after [`Self::load_prefs`], before the first UI pass).
+    pub fn apply_zoom_to_ctx(&self, ctx: &egui::Context) {
+        // Direct option write: `set_zoom_factor` only defers to the next
+        // pass, but at startup there is no pass yet to consume it.
+        ctx.memory_mut(|mem| mem.options.zoom_factor = self.zoom);
     }
 
     /// Write preferences when they changed since the last write. Called
@@ -1216,6 +1228,49 @@ mod tests {
         harness.run();
         assert!(app.borrow().error.is_none(), "Close must clear the error");
         std::fs::remove_file(&good).unwrap();
+    }
+
+    #[test]
+    fn zoom_prefs_restore_into_the_context() {
+        let mut app = App::new(None);
+        app.apply_prefs_string("zoom=1.5\n");
+        let ctx = egui::Context::default();
+        app.apply_zoom_to_ctx(&ctx);
+        assert!(
+            (ctx.zoom_factor() - 1.5).abs() < 1e-6,
+            "loaded zoom must be applied to the egui context, got {}",
+            ctx.zoom_factor()
+        );
+    }
+
+    #[test]
+    fn recompute_matches_drops_stale_pending_jumps() {
+        let doc = temp_path("stalejump.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&doc, "# One\n\nalpha\n\n# Two\n\nalpha\n").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        {
+            let mut a = app.borrow_mut();
+            a.search.query = "alpha".into();
+            a.recompute_matches();
+            a.search.step(1);
+            a.queue_jumps();
+        }
+        assert!(app.borrow().pending_render_jump.is_some());
+        // A reload recomputes matches; pending jumps queued against the old
+        // text must be dropped, not scrolled to.
+        app.borrow_mut().open_path(&doc);
+        assert!(
+            app.borrow().pending_render_jump.is_none(),
+            "stale rendered jump dropped on reload"
+        );
+        assert!(
+            app.borrow().pending_source_match.is_none(),
+            "stale source jump dropped on reload"
+        );
+        std::fs::remove_file(&doc).unwrap();
     }
 
     #[test]
