@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::TryRecvError;
 use std::time::Instant;
 
 use eframe::egui;
@@ -132,11 +131,8 @@ impl App {
     fn poll_watcher(&mut self) {
         let mut changed = false;
         if let Some(w) = &self.watcher {
-            loop {
-                match w.events.try_recv() {
-                    Ok(()) => changed = true,
-                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-                }
+            while let Ok(()) = w.events.try_recv() {
+                changed = true;
             }
         }
         if changed && self.changed_at.is_none() {
@@ -282,18 +278,16 @@ impl App {
                     if ui
                         .selectable_label(self.mode == ViewMode::Rendered, "Rendered")
                         .clicked()
+                        && self.mode != ViewMode::Rendered
                     {
-                        if self.mode != ViewMode::Rendered {
-                            action = Some(Action::ToggleMode);
-                        }
+                        action = Some(Action::ToggleMode);
                     }
                     if ui
                         .selectable_label(self.mode == ViewMode::Source, "Source")
                         .clicked()
+                        && self.mode != ViewMode::Source
                     {
-                        if self.mode != ViewMode::Source {
-                            action = Some(Action::ToggleMode);
-                        }
+                        action = Some(Action::ToggleMode);
                     }
                 });
             });
@@ -368,10 +362,19 @@ mod tests {
         let cmd = egui::Modifiers::COMMAND;
         assert_eq!(shortcut_action(ctrl, egui::Key::O), Some(Action::Open));
         assert_eq!(shortcut_action(cmd, egui::Key::O), Some(Action::Open));
-        assert_eq!(shortcut_action(ctrl, egui::Key::E), Some(Action::ToggleMode));
+        assert_eq!(
+            shortcut_action(ctrl, egui::Key::E),
+            Some(Action::ToggleMode)
+        );
         assert_eq!(shortcut_action(cmd, egui::Key::E), Some(Action::ToggleMode));
-        assert_eq!(shortcut_action(ctrl, egui::Key::D), Some(Action::ToggleTheme));
-        assert_eq!(shortcut_action(cmd, egui::Key::D), Some(Action::ToggleTheme));
+        assert_eq!(
+            shortcut_action(ctrl, egui::Key::D),
+            Some(Action::ToggleTheme)
+        );
+        assert_eq!(
+            shortcut_action(cmd, egui::Key::D),
+            Some(Action::ToggleTheme)
+        );
         assert_eq!(
             shortcut_action(egui::Modifiers::NONE, egui::Key::F5),
             Some(Action::Refresh)
