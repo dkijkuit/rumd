@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::TryRecvError;
+use std::time::Instant;
 
 use eframe::egui;
 
-use crate::document::Document;
+use crate::document::{Document, FileWatcher, RELOAD_DEBOUNCE, debounce_ready};
 use crate::source;
 use crate::viewer::RenderedView;
 
@@ -46,6 +48,11 @@ pub fn event_action(event: &egui::Event) -> Option<Action> {
     }
 }
 
+/// Open a dropped file set: the first path wins.
+pub fn first_drop(paths: &[PathBuf]) -> Option<PathBuf> {
+    paths.first().cloned()
+}
+
 const OPEN_FILTER_NAME: &str = "Markdown";
 const OPEN_FILTER_EXTS: &[&str] = &["md", "markdown", "mdown", "txt"];
 const EMPTY_HINT: &str = "Drop a .md file here or press Ctrl+O";
@@ -56,6 +63,9 @@ pub struct App {
     pub mode: ViewMode,
     pub theme_pref: egui::ThemePreference,
     pub error: Option<String>,
+    pub watcher: Option<FileWatcher>,
+    pub watcher_failed: bool,
+    pub changed_at: Option<Instant>,
     rendered: RenderedView,
     open_requested: bool,
     applied_theme: Option<egui::ThemePreference>,
@@ -69,6 +79,9 @@ impl App {
             mode: ViewMode::Rendered,
             theme_pref: egui::ThemePreference::System,
             error: None,
+            watcher: None,
+            watcher_failed: false,
+            changed_at: None,
             rendered: RenderedView::new(),
             open_requested: false,
             applied_theme: None,
@@ -90,8 +103,23 @@ impl App {
                 if let Some(dir) = doc.dir() {
                     let _ = std::env::set_current_dir(dir);
                 }
-                self.doc = Some(doc);
                 self.error = None;
+                match FileWatcher::spawn(path) {
+                    Ok(w) => {
+                        self.watcher = Some(w);
+                        self.watcher_failed = false;
+                    }
+                    Err(e) => {
+                        self.watcher = None;
+                        if !self.watcher_failed {
+                            self.error =
+                                Some(format!("Auto-reload unavailable: {e}. Use Refresh."));
+                        }
+                        self.watcher_failed = true;
+                    }
+                }
+                self.doc = Some(doc);
+                self.changed_at = None;
             }
             Err(e) => {
                 self.error = Some(format!("Failed to open {}: {}", path.display(), e));
@@ -99,9 +127,33 @@ impl App {
         }
     }
 
+    /// Drain watcher events; reload once the file has been quiet for
+    /// RELOAD_DEBOUNCE.
+    fn poll_watcher(&mut self) {
+        let mut changed = false;
+        if let Some(w) = &self.watcher {
+            loop {
+                match w.events.try_recv() {
+                    Ok(()) => changed = true,
+                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                }
+            }
+        }
+        if changed && self.changed_at.is_none() {
+            self.changed_at = Some(Instant::now());
+        }
+        if debounce_ready(self.changed_at, Instant::now(), RELOAD_DEBOUNCE) {
+            self.changed_at = None;
+            if let Some(path) = self.doc.as_ref().map(|d| d.path.clone()) {
+                self.open_path(&path);
+            }
+        }
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.handle_events(&ctx);
+        self.poll_watcher();
         self.apply_theme(&ctx);
         self.show_error_banner(ui);
         self.show_top_bar(ui);
@@ -138,6 +190,17 @@ impl App {
                 Some(Action::Refresh) => self.refresh(),
                 None => {}
             }
+        }
+
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        if let Some(path) = first_drop(&dropped) {
+            self.open_path(&path);
         }
 
         if self.open_requested {
@@ -461,5 +524,63 @@ mod tests {
             });
         harness.run();
         harness.run();
+    }
+
+    #[test]
+    fn first_drop_picks_first_path() {
+        let a = PathBuf::from("/tmp/a.md");
+        let b = PathBuf::from("/tmp/b.md");
+        assert_eq!(first_drop(&[]), None);
+        assert_eq!(first_drop(&[a.clone(), b]), Some(a));
+    }
+
+    #[test]
+    fn dropping_directory_shows_error_keeps_doc() {
+        let good = temp_path("drop_keep.md");
+        std::fs::write(&good, "# Still Here").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&good);
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run();
+
+        app.borrow_mut().open_path(Path::new("/tmp"));
+        harness.run();
+        assert!(harness.query_by_label_contains("Failed to open").is_some());
+        harness.get_by_label("Still Here");
+        std::fs::remove_file(&good).unwrap();
+    }
+
+    #[test]
+    fn auto_reload_updates_rendered_view() {
+        let path = temp_path("reload.md");
+        std::fs::write(&path, "# First Heading").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&path);
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        harness.get_by_label("First Heading");
+
+        std::fs::write(&path, "# Reloaded Heading").unwrap();
+        let mut updated = false;
+        for _ in 0..100 {
+            harness.run_steps(1);
+            if harness.query_by_label("Reloaded Heading").is_some() {
+                updated = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(updated, "auto-reload never updated the view");
+        std::fs::remove_file(&path).unwrap();
     }
 }
