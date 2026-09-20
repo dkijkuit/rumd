@@ -71,6 +71,7 @@ pub struct App {
     pub watcher_failed: bool,
     pub changed_at: Option<Instant>,
     pub search: search::SearchState,
+    pending_source_match: Option<std::ops::Range<usize>>,
     rendered: RenderedView,
     open_requested: bool,
     applied_theme: Option<egui::ThemePreference>,
@@ -88,6 +89,7 @@ impl App {
             watcher_failed: false,
             changed_at: None,
             search: search::SearchState::default(),
+            pending_source_match: None,
             rendered: RenderedView::new(),
             open_requested: false,
             applied_theme: None,
@@ -180,6 +182,10 @@ impl App {
         }
     }
 
+    fn jump_source_to_current(&mut self) {
+        self.pending_source_match = self.search.current_match().cloned();
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.handle_events(&ctx);
@@ -196,13 +202,14 @@ impl App {
                 ViewMode::Rendered => self.rendered.show(ui, &doc.raw),
                 ViewMode::Source => {
                     let theme = source::code_theme(self.theme_pref, &ctx);
-                    source::show(ui, doc, theme);
+                    let jump = self.pending_source_match.take();
+                    source::show(ui, &doc.raw, theme, jump);
                 }
                 ViewMode::Split => {
                     let theme = source::code_theme(self.theme_pref, &ctx);
                     ui.columns(2, |columns| {
                         self.rendered.show(&mut columns[0], &doc.raw);
-                        source::show(&mut columns[1], doc, theme);
+                        source::show(&mut columns[1], &doc.raw, theme, None);
                     });
                 }
             },
@@ -249,6 +256,7 @@ impl App {
                 self.search.open = false;
             } else if enter {
                 self.search.step(if shift { -1 } else { 1 });
+                self.jump_source_to_current();
             }
         }
 
@@ -420,9 +428,11 @@ impl App {
                 ui.weak(count);
                 if ui.button("<").clicked() {
                     self.search.step(-1);
+                    self.jump_source_to_current();
                 }
                 if ui.button(">").clicked() {
                     self.search.step(1);
+                    self.jump_source_to_current();
                 }
                 if ui.button("Close").clicked() {
                     self.search.open = false;
@@ -823,6 +833,37 @@ mod tests {
         assert!(reloaded, "reload never recomputed matches");
         assert_eq!(app.borrow().search.current, 0, "current must clamp");
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn search_jump_in_source_mode_selects_without_panic() {
+        let doc = temp_path("srcjump.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&doc, "line one\nneedle here\nline three\nneedle again\n").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        app.borrow_mut().mode = ViewMode::Source;
+        {
+            let mut a = app.borrow_mut();
+            a.search.query = "needle".into();
+            a.recompute_matches();
+            a.search.step(1);
+            a.jump_source_to_current();
+        }
+        assert!(app.borrow().pending_source_match.is_some());
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(3);
+        assert!(
+            app.borrow().pending_source_match.is_none(),
+            "pending jump must be consumed on render"
+        );
+        std::fs::remove_file(&doc).unwrap();
     }
 
     #[test]

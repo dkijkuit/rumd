@@ -3,11 +3,11 @@ use std::ops::Range;
 use eframe::egui;
 use egui_code_editor::{CodeEditor, ColorTheme, Syntax};
 
-use crate::document::Document;
+use crate::search;
 
 /// A TextBuffer wrapper that exposes text but rejects every mutation,
 /// turning egui_code_editor into a read-only viewer.
-struct ReadOnlyBuffer<'a>(&'a String);
+struct ReadOnlyBuffer<'a>(&'a str);
 
 impl egui::TextBuffer for ReadOnlyBuffer<'_> {
     fn is_mutable(&self) -> bool {
@@ -55,9 +55,9 @@ pub fn code_theme(pref: egui::ThemePreference, ctx: &egui::Context) -> ColorThem
     }
 }
 
-pub fn show(ui: &mut egui::Ui, doc: &Document, theme: ColorTheme) {
-    let mut buffer = ReadOnlyBuffer(&doc.raw);
-    CodeEditor::default()
+pub fn show(ui: &mut egui::Ui, raw: &str, theme: ColorTheme, jump: Option<Range<usize>>) {
+    let mut buffer = ReadOnlyBuffer(raw);
+    let (output, _tokens) = CodeEditor::default()
         .id_source("rumd_source")
         .with_rows(24)
         .with_fontsize(14.0)
@@ -66,6 +66,25 @@ pub fn show(ui: &mut egui::Ui, doc: &Document, theme: ColorTheme) {
         .with_clickable_links(true)
         .vscroll(true)
         .show(ui, &mut buffer, &markdown_syntax());
+
+    // Select and scroll to the searched match. The state is stored back
+    // under the TextEdit's own widget id (taken from its output), so it
+    // reloads next frame and the selection appears.
+    if let Some(byte_range) = jump {
+        let start = search::char_index_of_byte(raw, byte_range.start);
+        let end = search::char_index_of_byte(raw, byte_range.end);
+        let start_cc = egui::text::CCursor::new(egui::text::CharIndex(start));
+        let end_cc = egui::text::CCursor::new(egui::text::CharIndex(end));
+        let mut state = output.state;
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::two(start_cc, end_cc)));
+        let id = output.response.response.id;
+        state.store(ui.ctx(), id);
+        let local = output.galley.pos_from_cursor(start_cc);
+        let world = local.translate(output.galley_pos.to_vec2());
+        ui.scroll_to_rect(world, None);
+    }
 }
 
 #[cfg(test)]
@@ -76,7 +95,7 @@ mod tests {
     #[test]
     fn read_only_buffer_exposes_text() {
         let text = String::from("# Hello");
-        let buf = ReadOnlyBuffer(&text);
+        let buf = ReadOnlyBuffer(text.as_str());
         assert_eq!(buf.as_str(), "# Hello");
         assert!(!buf.is_mutable());
     }
@@ -111,16 +130,26 @@ mod tests {
     #[test]
     fn source_view_runs_headless() {
         use egui_kittest::Harness;
-        let doc = Document {
-            path: std::path::PathBuf::from("t.md"),
-            raw: "# T\n\nbody".to_string(),
-            lossy: false,
-        };
+        let raw = "# T\n\nbody";
         let ctx = egui::Context::default();
         let theme = code_theme(egui::ThemePreference::Dark, &ctx);
         let mut harness = Harness::builder()
             .with_size(egui::vec2(600.0, 400.0))
-            .build_ui(move |ui| show(ui, &doc, theme));
+            .build_ui(move |ui| show(ui, raw, theme, None));
+        harness.run();
+    }
+
+    #[test]
+    fn source_selection_handles_multibyte_offsets() {
+        use egui_kittest::Harness;
+        let raw = "é\nneedle here\n";
+        let jump = crate::search::find_matches(raw, "needle")[0].clone();
+        let ctx = egui::Context::default();
+        let theme = code_theme(egui::ThemePreference::Dark, &ctx);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 400.0))
+            .build_ui(move |ui| show(ui, raw, theme, Some(jump.clone())));
+        harness.run();
         harness.run();
     }
 }
