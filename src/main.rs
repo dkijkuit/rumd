@@ -17,6 +17,11 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "rumd",
         options,
-        Box::new(move |_cc| Ok(Box::new(app::App::new(path)))),
+        Box::new(move |_cc| {
+            let mut app = app::App::new(path);
+            app.set_prefs_file(app::prefs_path());
+            app.load_prefs();
+            Ok(Box::new(app))
+        }),
     )
 }

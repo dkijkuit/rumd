@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-
 use eframe::egui;
 
 use crate::document::{Document, FileWatcher, RELOAD_DEBOUNCE, debounce_ready};
@@ -62,6 +61,70 @@ const EMPTY_HINT: &str = "Drop a .md file here or press Ctrl+O";
 const LOSSY_BADGE: &str = "not valid UTF-8";
 const SEARCH_FIELD: &str = "rumd_search_field";
 
+const KEY_THEME: &str = "theme";
+const KEY_ZOOM: &str = "zoom";
+const KEY_MODE: &str = "mode";
+const ZOOM_MIN: f32 = 0.2;
+const ZOOM_MAX: f32 = 5.0;
+
+pub fn clamp_zoom(zoom: f32) -> f32 {
+    zoom.clamp(ZOOM_MIN, ZOOM_MAX)
+}
+
+pub fn encode_theme(pref: egui::ThemePreference) -> &'static str {
+    match pref {
+        egui::ThemePreference::Dark => "dark",
+        egui::ThemePreference::Light => "light",
+        egui::ThemePreference::System => "system",
+    }
+}
+
+pub fn decode_theme(s: &str) -> egui::ThemePreference {
+    match s {
+        "dark" => egui::ThemePreference::Dark,
+        "light" => egui::ThemePreference::Light,
+        _ => egui::ThemePreference::System,
+    }
+}
+
+pub fn encode_mode(mode: ViewMode) -> &'static str {
+    match mode {
+        ViewMode::Rendered => "rendered",
+        ViewMode::Split => "split",
+        ViewMode::Source => "source",
+    }
+}
+
+pub fn decode_mode(s: &str) -> ViewMode {
+    match s {
+        "split" => ViewMode::Split,
+        "source" => ViewMode::Source,
+        _ => ViewMode::Rendered,
+    }
+}
+
+pub fn decode_zoom(raw: Option<&str>) -> f32 {
+    raw.and_then(|s| s.parse::<f32>().ok())
+        .map(clamp_zoom)
+        .unwrap_or(1.0)
+}
+
+/// Platform-appropriate location of the prefs file, if determinable.
+pub fn prefs_path() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let base = std::env::var_os("APPDATA").map(PathBuf::from)?;
+        Some(base.join("rumd").join("prefs.txt"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+        Some(base.join("rumd").join("prefs.txt"))
+    }
+}
+
 pub struct App {
     pub doc: Option<Document>,
     pub mode: ViewMode,
@@ -71,9 +134,16 @@ pub struct App {
     pub watcher_failed: bool,
     pub changed_at: Option<Instant>,
     pub search: search::SearchState,
+    /// Mirrored from `ctx.zoom_factor()` every frame (egui's native zoom).
+    pub zoom: f32,
     pending_source_match: Option<std::ops::Range<usize>>,
     pub sections: Vec<std::ops::Range<usize>>,
     pending_render_jump: Option<usize>,
+    /// Where prefs are persisted; `None` (tests) disables writing.
+    prefs_file: Option<PathBuf>,
+    saved_theme: Option<egui::ThemePreference>,
+    saved_mode: Option<ViewMode>,
+    saved_zoom: f32,
     rendered: RenderedView,
     open_requested: bool,
     applied_theme: Option<egui::ThemePreference>,
@@ -91,9 +161,14 @@ impl App {
             watcher_failed: false,
             changed_at: None,
             search: search::SearchState::default(),
+            zoom: 1.0,
             pending_source_match: None,
             sections: Vec::new(),
             pending_render_jump: None,
+            prefs_file: None,
+            saved_theme: None,
+            saved_mode: None,
+            saved_zoom: 1.0,
             rendered: RenderedView::new(),
             open_requested: false,
             applied_theme: None,
@@ -195,12 +270,80 @@ impl App {
             .and_then(|m| search::section_containing(&self.sections, m.start));
     }
 
+    /// Opt in to preference persistence (main only; tests leave `None`).
+    pub fn set_prefs_file(&mut self, path: Option<PathBuf>) {
+        self.prefs_file = path;
+    }
+
+    /// Serialize the current preferences as `key=value` lines.
+    pub fn prefs_to_string(&self) -> String {
+        format!(
+            "{}={}\n{}={}\n{}={}\n",
+            KEY_THEME,
+            encode_theme(self.theme_pref),
+            KEY_ZOOM,
+            self.zoom,
+            KEY_MODE,
+            encode_mode(self.mode)
+        )
+    }
+
+    /// Apply `key=value` lines; unknown keys/values are ignored.
+    pub fn apply_prefs_string(&mut self, s: &str) {
+        for line in s.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            match key.trim() {
+                KEY_THEME => self.theme_pref = decode_theme(value.trim()),
+                KEY_ZOOM => self.zoom = decode_zoom(Some(value.trim())),
+                KEY_MODE => self.mode = decode_mode(value.trim()),
+                _ => {}
+            }
+        }
+    }
+
+    /// Read preferences from disk if a prefs file is configured.
+    pub fn load_prefs(&mut self) {
+        if let Some(path) = &self.prefs_file {
+            if let Ok(s) = std::fs::read_to_string(path) {
+                self.apply_prefs_string(&s);
+            }
+            self.saved_theme = Some(self.theme_pref);
+            self.saved_mode = Some(self.mode);
+            self.saved_zoom = self.zoom;
+        }
+    }
+
+    /// Write preferences when they changed since the last write. Called
+    /// every frame; zoom mirroring makes zoom changes visible here.
+    fn persist_prefs_if_changed(&mut self) {
+        let changed = self.saved_theme != Some(self.theme_pref)
+            || self.saved_mode != Some(self.mode)
+            || (self.saved_zoom - self.zoom).abs() > f32::EPSILON;
+        if !changed {
+            return;
+        }
+        if let Some(path) = &self.prefs_file {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if std::fs::write(path, self.prefs_to_string()).is_ok() {
+                self.saved_theme = Some(self.theme_pref);
+                self.saved_mode = Some(self.mode);
+                self.saved_zoom = self.zoom;
+            }
+        }
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.handle_events(&ctx);
         self.poll_watcher(&ctx);
         self.apply_theme(&ctx);
         Self::apply_typography(&ctx);
+        self.zoom = ctx.zoom_factor();
+        self.persist_prefs_if_changed();
         self.show_error_banner(ui);
         self.show_top_bar(ui);
         self.show_search_bar(ui);
@@ -926,6 +1069,59 @@ mod tests {
             "jump consumed by rendered view"
         );
         std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn prefs_roundtrip_and_defaults() {
+        let mut app = App::new(None);
+        app.mode = ViewMode::Source;
+        app.theme_pref = egui::ThemePreference::Dark;
+        app.zoom = 1.3;
+        let s = app.prefs_to_string();
+        assert!(s.contains("mode=source"));
+        assert!(s.contains("theme=dark"));
+        assert!(s.contains("zoom=1.3"));
+
+        let mut other = App::new(None);
+        other.apply_prefs_string(&s);
+        assert_eq!(other.mode, ViewMode::Source);
+        assert_eq!(other.theme_pref, egui::ThemePreference::Dark);
+        assert!((other.zoom - 1.3).abs() < 1e-6);
+
+        // Garbage and missing values fall back without panicking.
+        other.apply_prefs_string("theme=bogus\nzoom=zzz\nmode=huh\n");
+        assert_eq!(other.theme_pref, egui::ThemePreference::System);
+        assert_eq!(other.mode, ViewMode::Rendered);
+        assert!((other.zoom - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn zoom_shortcuts_update_mirrored_zoom() {
+        let app = Rc::new(RefCell::new(App::new(None)));
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run();
+        // egui's native zoom shortcuts are bound to Modifiers::COMMAND
+        // (the winit backend maps ctrl to command on non-Mac; kittest must
+        // inject the command bit explicitly).
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Equals);
+        harness.run();
+        assert!(
+            app.borrow().zoom > 1.0,
+            "ctrl+= must zoom in natively, zoom={}",
+            app.borrow().zoom
+        );
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Num0);
+        harness.run();
+        assert!(
+            (app.borrow().zoom - 1.0).abs() < 1e-6,
+            "ctrl+0 must reset zoom, zoom={}",
+            app.borrow().zoom
+        );
     }
 
     #[test]
