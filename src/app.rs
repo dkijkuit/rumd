@@ -4,6 +4,7 @@ use std::time::Instant;
 use eframe::egui;
 
 use crate::document::{Document, FileWatcher, RELOAD_DEBOUNCE, debounce_ready};
+use crate::search;
 use crate::source;
 use crate::viewer::RenderedView;
 
@@ -20,6 +21,7 @@ pub enum Action {
     ToggleMode,
     ToggleTheme,
     Refresh,
+    Search,
 }
 
 /// Map a modifier+key combination to a global action.
@@ -29,6 +31,7 @@ pub fn shortcut_action(mods: egui::Modifiers, key: egui::Key) -> Option<Action> 
         (true, egui::Key::O) => Some(Action::Open),
         (true, egui::Key::E) => Some(Action::ToggleMode),
         (true, egui::Key::D) => Some(Action::ToggleTheme),
+        (true, egui::Key::F) => Some(Action::Search),
         (false, egui::Key::F5) => Some(Action::Refresh),
         _ => None,
     }
@@ -57,6 +60,7 @@ const OPEN_FILTER_NAME: &str = "Markdown";
 const OPEN_FILTER_EXTS: &[&str] = &["md", "markdown", "mdown", "txt"];
 const EMPTY_HINT: &str = "Drop a .md file here or press Ctrl+O";
 const LOSSY_BADGE: &str = "not valid UTF-8";
+const SEARCH_FIELD: &str = "rumd_search_field";
 
 pub struct App {
     pub doc: Option<Document>,
@@ -66,6 +70,7 @@ pub struct App {
     pub watcher: Option<FileWatcher>,
     pub watcher_failed: bool,
     pub changed_at: Option<Instant>,
+    pub search: search::SearchState,
     rendered: RenderedView,
     open_requested: bool,
     applied_theme: Option<egui::ThemePreference>,
@@ -82,6 +87,7 @@ impl App {
             watcher: None,
             watcher_failed: false,
             changed_at: None,
+            search: search::SearchState::default(),
             rendered: RenderedView::new(),
             open_requested: false,
             applied_theme: None,
@@ -131,6 +137,7 @@ impl App {
                 }
                 self.doc = Some(doc);
                 self.changed_at = None;
+                self.recompute_matches();
             }
             Err(e) => {
                 self.error = Some(format!("Failed to open {}: {}", path.display(), e));
@@ -163,6 +170,16 @@ impl App {
         }
     }
 
+    /// Recompute search matches against the current document and clamp
+    /// the current index (used on query edits, open, and reloads).
+    pub fn recompute_matches(&mut self) {
+        let text = self.doc.as_ref().map(|d| d.raw.as_str()).unwrap_or("");
+        self.search.matches = search::find_matches(text, &self.search.query);
+        if self.search.current >= self.search.matches.len() {
+            self.search.current = self.search.matches.len().saturating_sub(1);
+        }
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.handle_events(&ctx);
@@ -170,6 +187,7 @@ impl App {
         self.apply_theme(&ctx);
         self.show_error_banner(ui);
         self.show_top_bar(ui);
+        self.show_search_bar(ui);
         self.update_window_title(&ctx);
 
         egui::CentralPanel::default().show(ui, |ui| match &self.doc {
@@ -209,7 +227,28 @@ impl App {
                     self.error = None;
                 }
                 Some(Action::Refresh) => self.refresh(),
+                Some(Action::Search) => {
+                    self.search.open = true;
+                    self.recompute_matches();
+                    ctx.memory_mut(|m| m.request_focus(egui::Id::new(SEARCH_FIELD)));
+                    self.error = None;
+                }
                 None => {}
+            }
+        }
+
+        if self.search.open {
+            let (enter, shift, esc) = ctx.input(|i| {
+                (
+                    i.key_pressed(egui::Key::Enter),
+                    i.modifiers.shift,
+                    i.key_pressed(egui::Key::Escape),
+                )
+            });
+            if esc {
+                self.search.open = false;
+            } else if enter {
+                self.search.step(if shift { -1 } else { 1 });
             }
         }
 
@@ -349,8 +388,47 @@ impl App {
             }
             Some(Action::ToggleTheme) => self.toggle_theme(&ctx),
             Some(Action::Refresh) => self.refresh(),
+            Some(Action::Search) => {
+                self.search.open = true;
+                self.recompute_matches();
+                ctx.memory_mut(|m| m.request_focus(egui::Id::new(SEARCH_FIELD)));
+            }
             None => {}
         }
+    }
+
+    fn show_search_bar(&mut self, ui: &mut egui::Ui) {
+        if !self.search.open {
+            return;
+        }
+        egui::Panel::top("rumd_search_bar").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let response = egui::TextEdit::singleline(&mut self.search.query)
+                    .id(egui::Id::new(SEARCH_FIELD))
+                    .hint_text("Search (case-insensitive)")
+                    .desired_width(240.0)
+                    .show(ui)
+                    .response;
+                if response.changed() {
+                    self.recompute_matches();
+                }
+                let count = if self.search.matches.is_empty() {
+                    "0/0".to_string()
+                } else {
+                    format!("{}/{}", self.search.current + 1, self.search.matches.len())
+                };
+                ui.weak(count);
+                if ui.button("<").clicked() {
+                    self.search.step(-1);
+                }
+                if ui.button(">").clicked() {
+                    self.search.step(1);
+                }
+                if ui.button("Close").clicked() {
+                    self.search.open = false;
+                }
+            });
+        });
     }
 
     fn show_empty_state(&self, ui: &mut egui::Ui) {
@@ -441,6 +519,8 @@ mod tests {
         assert_eq!(shortcut_action(cmd, egui::Key::F5), None);
         assert_eq!(shortcut_action(egui::Modifiers::NONE, egui::Key::O), None);
         assert_eq!(shortcut_action(ctrl, egui::Key::X), None);
+        assert_eq!(shortcut_action(ctrl, egui::Key::F), Some(Action::Search));
+        assert_eq!(shortcut_action(cmd, egui::Key::F), Some(Action::Search));
     }
 
     #[test]
@@ -666,6 +746,83 @@ mod tests {
         harness.run();
         harness.run();
         std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn ctrl_f_opens_search_and_enter_advances() {
+        let doc = temp_path("findbar.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&doc, "alpha and alpha").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        app.borrow_mut().search.query = "alpha".into();
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        assert!(
+            harness.query_by_label("0/0").is_none(),
+            "bar starts closed"
+        );
+        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::F);
+        harness.run();
+        harness.get_by_label("1/2");
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        harness.get_by_label("2/2");
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        harness.get_by_label("1/2");
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert!(
+            harness.query_by_label("1/2").is_none(),
+            "esc closes the bar"
+        );
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn reload_recomputes_matches_and_clamps_current() {
+        let path = temp_path("findreload.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&path, "one two one two one").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&path);
+        {
+            let mut a = app.borrow_mut();
+            a.search.open = true;
+            a.search.query = "two".into();
+            a.recompute_matches();
+            a.search.step(1);
+        }
+        assert_eq!(app.borrow().search.matches.len(), 2);
+        assert_eq!(app.borrow().search.current, 1);
+
+        std::fs::write(&path, "one two").unwrap();
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        let mut reloaded = false;
+        for _ in 0..100 {
+            harness.run_steps(1);
+            if app.borrow().search.matches.len() == 1 {
+                reloaded = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(reloaded, "reload never recomputed matches");
+        assert_eq!(app.borrow().search.current, 0, "current must clamp");
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

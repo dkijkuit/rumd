@@ -113,6 +113,35 @@ pub fn section_containing(sections: &[Range<usize>], at: usize) -> Option<usize>
     sections.iter().position(|r| r.start <= at && at < r.end)
 }
 
+/// Live find-bar state.
+#[derive(Default)]
+pub struct SearchState {
+    pub open: bool,
+    pub query: String,
+    /// Byte-offset ranges into the current document.
+    pub matches: Vec<Range<usize>>,
+    /// Index of the current match into `matches`.
+    pub current: usize,
+}
+
+impl SearchState {
+    // Wired into the app in Tasks 5/6; see the allow note on `find_matches`.
+    #[allow(dead_code)]
+    pub fn current_match(&self) -> Option<&Range<usize>> {
+        self.matches.get(self.current)
+    }
+
+    /// Advance `delta` matches, wrapping at both ends.
+    pub fn step(&mut self, delta: isize) {
+        if self.matches.is_empty() {
+            self.current = 0;
+            return;
+        }
+        let n = self.matches.len() as isize;
+        self.current = (self.current as isize + delta).rem_euclid(n) as usize;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +236,32 @@ mod tests {
         assert_eq!(section_containing(&sections, 3), Some(0));
         assert_eq!(section_containing(&sections, 7), Some(1));
         assert_eq!(section_containing(&sections, 10), None);
+    }
+
+    #[test]
+    fn search_state_steps_with_wraparound() {
+        let mut s = SearchState {
+            open: true,
+            query: "a".into(),
+            matches: vec![0..1, 2..3, 4..5],
+            current: 0,
+        };
+        s.step(1);
+        assert_eq!(s.current, 1);
+        s.step(-1);
+        assert_eq!(s.current, 0);
+        s.step(-1);
+        assert_eq!(s.current, 2);
+        s.step(1);
+        assert_eq!(s.current, 0);
+    }
+
+    #[test]
+    fn search_state_step_on_empty_is_noop() {
+        let mut s = SearchState::default();
+        s.step(1);
+        s.step(-1);
+        assert_eq!(s.current, 0);
+        assert!(s.current_match().is_none());
     }
 }
