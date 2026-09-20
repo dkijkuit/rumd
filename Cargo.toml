@@ -1,0 +1,20 @@
+[package]
+name = "rumd"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+
+[dependencies]
+eframe = "0.36"
+egui_commonmark = { version = "0.25", features = ["better_syntax_highlighting"] }
+egui_code_editor = "0.4"
+notify = "8"
+rfd = "0.17"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+[dev-dependencies]
+egui_kittest = "0.36"
+
+[profile.release]
+strip = true
+lto = true
