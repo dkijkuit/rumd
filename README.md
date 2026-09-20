@@ -9,10 +9,16 @@ changes on disk.
 - Rendered markdown: GFM tables, task lists, strikethrough, syntax
   highlighted code blocks, clickable links, local images (relative paths
   resolve against the document's directory)
+- Centered reading column with adjusted typography
+- Split view: rendered and source side by side
+- Search (`Ctrl/Cmd+F`): matches select in the source view and jump by
+  section in the rendered view
 - Source view: read-only, line numbers, markdown highlighting
 - Dark/light theme, follows the system theme by default
+- Zoom (`Ctrl/Cmd+=`, `Ctrl/Cmd+-`, `Ctrl/Cmd+0`)
 - Auto-reload on file changes (degrades to manual refresh if the OS
   watch limit is hit)
+- Theme, zoom, and view mode persist between runs
 - Open via drag-and-drop, file dialog, or command line: `rumd README.md`
 
 ## Shortcuts
@@ -20,8 +26,12 @@ changes on disk.
 | Shortcut | Action |
 |---|---|
 | `Ctrl/Cmd+O` | Open file |
-| `Ctrl/Cmd+E` | Toggle rendered/source |
+| `Ctrl/Cmd+E` | Cycle rendered/split/source |
 | `Ctrl/Cmd+D` | Toggle dark/light theme |
+| `Ctrl/Cmd+F` | Search |
+| `Enter` / `Shift+Enter` | Next / previous match |
+| `Esc` | Close search |
+| `Ctrl/Cmd+=` / `Ctrl/Cmd+-` / `Ctrl/Cmd+0` | Zoom in / out / reset |
 | `F5` | Refresh from disk |
 
 ## Building
