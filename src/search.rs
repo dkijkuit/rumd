@@ -5,9 +5,6 @@ use std::ops::Range;
 /// Find all case-insensitive occurrences of `query` in `text`.
 /// Returns byte-offset ranges into the original `text`.
 /// An empty query yields no matches.
-// Wired into the app in later tasks; a binary crate flags unused `pub`
-// items, so silence until then (removed when the callers land).
-#[allow(dead_code)]
 pub fn find_matches(text: &str, query: &str) -> Vec<Range<usize>> {
     if query.is_empty() {
         return Vec::new();
@@ -36,7 +33,6 @@ pub fn find_matches(text: &str, query: &str) -> Vec<Range<usize>> {
 }
 
 /// Convert a byte offset into a char index (egui cursors are char-based).
-#[allow(dead_code)]
 pub fn char_index_of_byte(text: &str, byte: usize) -> usize {
     text[..byte.min(text.len())].chars().count()
 }
@@ -47,8 +43,6 @@ pub fn char_index_of_byte(text: &str, byte: usize) -> usize {
 /// If any ATX heading (`#`…) line exists outside a fence, sections start
 /// at heading lines; otherwise at blank lines that precede content.
 /// A document with no boundaries is a single section.
-// Wired into the app in Task 6; see the allow note on `find_matches`.
-#[allow(dead_code)]
 pub fn split_sections(text: &str) -> Vec<Range<usize>> {
     let lines: Vec<(usize, &str)> = {
         let mut v = Vec::new();
@@ -107,8 +101,6 @@ pub fn split_sections(text: &str) -> Vec<Range<usize>> {
 }
 
 /// Index of the section containing byte offset `at`.
-// Wired into the app in Task 6; see the allow note on `find_matches`.
-#[allow(dead_code)]
 pub fn section_containing(sections: &[Range<usize>], at: usize) -> Option<usize> {
     sections.iter().position(|r| r.start <= at && at < r.end)
 }
@@ -125,8 +117,6 @@ pub struct SearchState {
 }
 
 impl SearchState {
-    // Wired into the app in Tasks 5/6; see the allow note on `find_matches`.
-    #[allow(dead_code)]
     pub fn current_match(&self) -> Option<&Range<usize>> {
         self.matches.get(self.current)
     }
