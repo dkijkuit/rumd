@@ -54,20 +54,43 @@ impl RenderedView {
                 // Sections are rendered separately so a pending search jump
                 // can scroll to the exact section containing the match. The
                 // cache is documented to support multiple source ids.
+                //
+                // Each section gets its OWN child Ui with a distinct id:
+                // egui_commonmark derives widget ids (tables, code-block
+                // widgets, checkboxes) from `ui.id()` plus a counter that
+                // resets on every `show()` call, so sections sharing one Ui
+                // would collide ids (egui's red id-clash overlay, shared
+                // widget state).
                 for (i, range) in sections.iter().enumerate() {
+                    let top = inner.cursor().top();
+                    let sec_max = egui::Rect::from_min_max(
+                        egui::pos2(inner.max_rect().left(), top),
+                        egui::pos2(inner.max_rect().right(), f32::INFINITY),
+                    );
+                    let mut section_ui = inner.new_child(
+                        egui::UiBuilder::new()
+                            .id_salt(format!("rumd_section_{i}"))
+                            .max_rect(sec_max),
+                    );
+                    // Wrap at the actual column width, never at a wider
+                    // constant, or lines overflow and overlap neighbours.
+                    let wrap_width = section_ui.available_width();
                     let viewer = CommonMarkViewer::new()
-                        .default_width(Some(COLUMN_WIDTH as usize))
+                        .default_width(Some(wrap_width as usize))
                         .syntax_theme_light(SYNTAX_LIGHT)
                         .syntax_theme_dark(SYNTAX_DARK);
                     let response =
-                        viewer.show(&mut inner, &mut self.cache, &markdown[range.clone()]);
+                        viewer.show(&mut section_ui, &mut self.cache, &markdown[range.clone()]);
+                    // `new_child` does not advance the parent cursor; claim
+                    // the section's rect so the next section stacks below it.
+                    inner.allocate_rect(section_ui.min_rect(), egui::Sense::hover());
                     if *pending_jump == Some(i) {
                         *pending_jump = None;
                         inner.scroll_to_rect(response.response.rect, None);
                     }
                 }
-                // `new_child` does not reserve space in the parent; without
-                // this the ScrollArea would measure zero content.
+                // Tell the ScrollArea how tall the content is: nothing else
+                // expands this ui, so the measured content would stay zero.
                 ui.expand_to_include_rect(inner.min_rect());
             });
     }
@@ -182,5 +205,68 @@ mod tests {
         assert_eq!(super::column_width(600.0), 552.0); // available - 2*margin
         assert_eq!(super::column_width(300.0), 300.0); // never exceeds available
         assert_eq!(super::column_width(100.0), 100.0);
+    }
+
+    #[test]
+    fn no_widget_id_clashes_across_sections() {
+        // Two sections that EACH contain a table and an identical code
+        // block: per-section widget ids must never collide within a frame.
+        // egui_commonmark derives ids from `ui.id()` + a counter that resets
+        // per `show()` call, so sections must get distinct Ui ids.
+        let md = "# A\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```rust\nlet x = 1;\n```\n\n# B\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```rust\nlet x = 1;\n```\n".to_string();
+        let sections = crate::search::split_sections(&md);
+        assert_eq!(sections.len(), 2);
+        let mut view = RenderedView::new();
+        let secs = sections.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 400.0))
+            .build_ui(move |ui| {
+                view.show(ui, &md, &secs, &mut None);
+            });
+        harness.run();
+        harness.run();
+        // egui paints "🔥 <error>" text (debug id-clash overlay) when two
+        // widgets share an id at different rects in the same frame.
+        let clash = harness.output().shapes.iter().any(|clipped| {
+            matches!(&clipped.shape, egui::Shape::Text(t)
+                if t.galley.text().contains('🔥'))
+        });
+        assert!(!clash, "egui id-clash debug overlay was painted");
+    }
+
+    #[test]
+    fn text_wraps_at_column_width_not_constant() {
+        // In a narrow window the column is narrower than COLUMN_WIDTH; the
+        // viewer must wrap text at the actual column width, not the
+        // constant, or lines overflow the column and overlap neighbours.
+        let md = "a very long paragraph ".repeat(40);
+        let sections = crate::search::split_sections(&md);
+        assert_eq!(sections.len(), 1);
+        let mut view = RenderedView::new();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 400.0))
+            .build_ui(move |ui| {
+                view.show(ui, &md, &sections, &mut None);
+            });
+        harness.run();
+        harness.run();
+        // Column width at this window size is 552; allow a small tolerance
+        // for rounding and scrollbar insets.
+        let limit = super::column_width(600.0) + 16.0;
+        let overflowing: Vec<_> = harness
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(t) if t.galley.rect.width() > limit => {
+                    Some(t.galley.rect.width())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            overflowing.is_empty(),
+            "text galleys overflow the column (limit {limit}): {overflowing:?}"
+        );
     }
 }
