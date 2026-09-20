@@ -1,9 +1,14 @@
+mod app;
 mod document;
 mod source;
 mod viewer;
+
+use std::path::PathBuf;
+
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
+    let path = std::env::args().nth(1).map(PathBuf::from);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([900.0, 700.0]),
         ..Default::default()
@@ -11,16 +16,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "rumd",
         options,
-        Box::new(|_cc| {
-            Ok(Box::new(PlaceholderApp))
-        }),
+        Box::new(move |_cc| Ok(Box::new(app::App::new(path)))),
     )
-}
-
-struct PlaceholderApp;
-
-impl eframe::App for PlaceholderApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        ui.label("rumd");
-    }
 }

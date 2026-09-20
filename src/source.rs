@@ -72,7 +72,6 @@ pub fn show(ui: &mut egui::Ui, doc: &Document, theme: ColorTheme) {
 mod tests {
     use super::*;
     use eframe::egui::TextBuffer as _;
-    use std::ops::Range;
 
     #[test]
     fn read_only_buffer_exposes_text() {
