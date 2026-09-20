@@ -72,6 +72,8 @@ pub struct App {
     pub changed_at: Option<Instant>,
     pub search: search::SearchState,
     pending_source_match: Option<std::ops::Range<usize>>,
+    pub sections: Vec<std::ops::Range<usize>>,
+    pending_render_jump: Option<usize>,
     rendered: RenderedView,
     open_requested: bool,
     applied_theme: Option<egui::ThemePreference>,
@@ -90,6 +92,8 @@ impl App {
             changed_at: None,
             search: search::SearchState::default(),
             pending_source_match: None,
+            sections: Vec::new(),
+            pending_render_jump: None,
             rendered: RenderedView::new(),
             open_requested: false,
             applied_theme: None,
@@ -137,6 +141,7 @@ impl App {
                         self.watcher_failed = true;
                     }
                 }
+                self.sections = search::split_sections(&doc.raw);
                 self.doc = Some(doc);
                 self.changed_at = None;
                 self.recompute_matches();
@@ -182,8 +187,12 @@ impl App {
         }
     }
 
-    fn jump_source_to_current(&mut self) {
+    fn queue_jumps(&mut self) {
         self.pending_source_match = self.search.current_match().cloned();
+        self.pending_render_jump = self
+            .search
+            .current_match()
+            .and_then(|m| search::section_containing(&self.sections, m.start));
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
@@ -199,7 +208,10 @@ impl App {
         egui::CentralPanel::default().show(ui, |ui| match &self.doc {
             None => self.show_empty_state(ui),
             Some(doc) => match self.mode {
-                ViewMode::Rendered => self.rendered.show(ui, &doc.raw),
+                ViewMode::Rendered => {
+                    self.rendered
+                        .show(ui, &doc.raw, &self.sections, &mut self.pending_render_jump);
+                }
                 ViewMode::Source => {
                     let theme = source::code_theme(self.theme_pref, &ctx);
                     let jump = self.pending_source_match.take();
@@ -207,10 +219,15 @@ impl App {
                 }
                 ViewMode::Split => {
                     let theme = source::code_theme(self.theme_pref, &ctx);
+                    let sections = self.sections.clone();
+                    let mut render_jump = self.pending_render_jump;
+                    let source_jump = self.pending_source_match.take();
                     ui.columns(2, |columns| {
-                        self.rendered.show(&mut columns[0], &doc.raw);
-                        source::show(&mut columns[1], &doc.raw, theme, None);
+                        self.rendered
+                            .show(&mut columns[0], &doc.raw, &sections, &mut render_jump);
+                        source::show(&mut columns[1], &doc.raw, theme, source_jump);
                     });
+                    self.pending_render_jump = render_jump;
                 }
             },
         });
@@ -256,7 +273,7 @@ impl App {
                 self.search.open = false;
             } else if enter {
                 self.search.step(if shift { -1 } else { 1 });
-                self.jump_source_to_current();
+                self.queue_jumps();
             }
         }
 
@@ -428,11 +445,11 @@ impl App {
                 ui.weak(count);
                 if ui.button("<").clicked() {
                     self.search.step(-1);
-                    self.jump_source_to_current();
+                    self.queue_jumps();
                 }
                 if ui.button(">").clicked() {
                     self.search.step(1);
-                    self.jump_source_to_current();
+                    self.queue_jumps();
                 }
                 if ui.button("Close").clicked() {
                     self.search.open = false;
@@ -849,7 +866,7 @@ mod tests {
             a.search.query = "needle".into();
             a.recompute_matches();
             a.search.step(1);
-            a.jump_source_to_current();
+            a.queue_jumps();
         }
         assert!(app.borrow().pending_source_match.is_some());
         let app_for_ui = app.clone();
@@ -862,6 +879,37 @@ mod tests {
         assert!(
             app.borrow().pending_source_match.is_none(),
             "pending jump must be consumed on render"
+        );
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn rendered_jump_fires_on_enter() {
+        let doc = temp_path("renderjump.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&doc, "# One\n\nalpha\n\n# Two\n\nalpha\n").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        {
+            let mut a = app.borrow_mut();
+            a.search.open = true;
+            a.search.query = "alpha".into();
+            a.recompute_matches();
+            a.search.step(1);
+            a.queue_jumps();
+        }
+        assert!(app.borrow().pending_render_jump.is_some());
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(3);
+        assert!(
+            app.borrow().pending_render_jump.is_none(),
+            "jump consumed by rendered view"
         );
         std::fs::remove_file(&doc).unwrap();
     }
