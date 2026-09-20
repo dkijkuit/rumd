@@ -166,7 +166,7 @@ mod tests {
         // No headings outside fences → blank-line fallback applies. The
         // blank before the fence is outside it, so: "a" | fence block | "b".
         assert_eq!(s.len(), 3);
-        assert_eq!(&md[s[1].clone()], "```rust\n# not a heading\n```\n\n");
+        assert_eq!(&md[s[1].clone()], "\n```rust\n# not a heading\n```\n");
     }
 
     #[test]
@@ -174,7 +174,7 @@ mod tests {
         let md = "a\n\n~~~\n## not a heading\n~~~\n\nb";
         let s = split_sections(md);
         assert_eq!(s.len(), 3);
-        assert_eq!(&md[s[1].clone()], "~~~\n## not a heading\n~~~\n\n");
+        assert_eq!(&md[s[1].clone()], "\n~~~\n## not a heading\n~~~\n");
     }
 
     #[test]
@@ -185,7 +185,7 @@ mod tests {
         // interior blanks never split.
         assert_eq!(s.len(), 2);
         assert_eq!(s[0], 0..2);
-        assert_eq!(&md[s[1].clone()], "```\n# heading inside\nmore\n\nstill fenced");
+        assert_eq!(&md[s[1].clone()], "\n```\n# heading inside\nmore\n\nstill fenced");
     }
 
     #[test]
