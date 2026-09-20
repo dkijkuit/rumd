@@ -1,4 +1,5 @@
 mod document;
+mod source;
 mod viewer;
 use eframe::egui;
 
