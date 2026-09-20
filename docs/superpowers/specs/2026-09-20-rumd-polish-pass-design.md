@@ -50,7 +50,12 @@ brainstorming).
   (rejected: only fires on link activation, which cannot be simulated),
   `default_width`, `max_image_width`, and
   `syntax_theme_light` / `syntax_theme_dark` (used for polish).
-- `egui::Context::set_zoom_factor` exists for zoom.
+- `egui::Context::set_zoom_factor` exists, and **egui 0.36 already binds
+  the keyboard zoom shortcuts natively** (`Options::zoom_with_keyboard`
+  defaults to true; `Ctrl+=`/`Ctrl+-` step ±0.1, `Ctrl+0` resets, clamped
+  to 0.2–5.0). The app therefore uses egui's native zoom and syncs
+  `ctx.zoom_factor()` into app state for persistence instead of
+  registering competing shortcuts.
 - eframe's `persistence` provides `Storage`; preferences are stored as
   plain strings to avoid adding serde derives.
 
@@ -96,9 +101,10 @@ buttons, and a close button. Search is always case-insensitive in v1.
 around.
 
 **Shortcut interplay.** `Ctrl+F` opens the bar and focuses the field
-(refocuses if already open). While the search field has keyboard focus,
-`Enter`/`Shift+Enter`/`Esc` are consumed by the bar and zoom shortcuts are
-suppressed so typing punctuation never zooms.
+(refocuses if already open). `Enter`/`Shift+Enter`/`Esc` are handled
+globally whenever the bar is open, regardless of keyboard focus, so they
+keep working after the source view steals selection focus. Zoom keeps
+egui's native behavior (no per-field suppression).
 
 **Source view.** `source::show` gains an optional
 `SearchTarget { byte_range: Range<usize> }`. After the editor renders, use
@@ -138,11 +144,15 @@ correctness impact is limited to reference-heavy documents.
 
 ### 3. Zoom
 
-- `Ctrl+=` zoom in, `Ctrl+-` zoom out (each × 1.1), `Ctrl+0` reset to 1.0.
-- Applied with `ctx.set_zoom_factor`, clamped to 0.5–3.0.
+egui 0.36 provides the zoom shortcuts natively (`zoom_with_keyboard` is on
+by default): `Ctrl+=` zoom in, `Ctrl+-` zoom out (±0.1 per press), and
+`Ctrl+0` reset, clamped to 0.2–5.0. rumd does not register its own zoom
+shortcuts (that would double-zoom). Instead, the app mirrors
+`ctx.zoom_factor()` into app state every frame and persists it; a stored
+value outside 0.2–5.0 clamps on load.
+
 - Affects all UI including the source editor (its font size is set in
   points and scales with the zoom factor automatically).
-- Persisted; clamped on load.
 
 ### 4. Persistence
 
@@ -197,7 +207,8 @@ correctness impact is limited to reference-heavy documents.
 ## Error handling
 
 - No matches: counter shows `0/0`; next/prev are no-ops.
-- Zoom factor outside 0.5–3.0 in storage clamps on load.
+- Zoom factor outside 0.2–5.0 in storage clamps on load; unparseable
+  values fall back to 1.0.
 - Search across reload: matches recomputed; `current` clamps; a stale jump
   target is dropped rather than scrolled.
 - Section splitter must never panic on adversarial input (unclosed fences,
@@ -218,7 +229,9 @@ correctness impact is limited to reference-heavy documents.
     label appears, Enter advances `current`, source selection/scroll
     fires without panic, rendered jump does not panic on heading-less
     docs.
-  - Zoom: shortcuts change factor within clamp; reset returns to 1.0.
+  - Zoom: `Ctrl+=` raises `ctx.zoom_factor()`; the mirrored app value
+    follows; reset returns to 1.0; persistence decode clamps and falls
+    back on garbage.
   - Centered column: rendered text does not span full window width.
   - Persistence: save/load round-trip of prefs struct.
   - All v1 tests keep passing (error banner now has a Close button —
