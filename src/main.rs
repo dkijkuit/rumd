@@ -1,4 +1,5 @@
 mod document;
+mod viewer;
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
