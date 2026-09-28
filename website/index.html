@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rumd — a cross-platform markdown viewer in pure Rust</title>
+<meta name="description" content="rumd is a native markdown viewer with live reload, split view editing, search, and full GFM support. Pure Rust, no Electron, no telemetry.">
+<link rel="icon" type="image/png" href="assets/logo_without_bg.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body id="top">
+
+<header class="nav">
+  <a class="brand" href="#top">
+    <img src="assets/logo_without_bg.png" alt="">rumd
+  </a>
+  <nav>
+    <a href="#why">Why rumd</a>
+    <a href="#features">Features</a>
+    <a href="#screenshots">Screenshots</a>
+    <a href="#shortcuts">Shortcuts</a>
+    <a href="#get-started">Get started</a>
+    <!-- TODO: before publishing, find & replace this placeholder URL with the real repository URL -->
+    <a class="btn btn-small" href="https://github.com/TODO-rumd/rumd">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<section class="hero">
+  <div class="hero-text">
+    <h1>A cross-platform markdown viewer in <span class="accent">pure Rust</span></h1>
+    <p class="lead">rumd renders your markdown live — in a clean reading view
+    or side by side with its source — and refreshes automatically when the
+    file changes on disk.</p>
+    <div class="cta">
+      <a class="btn" href="#get-started">Get started</a>
+      <a class="btn btn-ghost" href="https://github.com/TODO-rumd/rumd">View source</a>
+    </div>
+    <p class="platforms">Linux · macOS · Windows — a single native binary</p>
+  </div>
+  <figure class="hero-shot">
+    <div class="window">
+      <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+      <img src="assets/dark-rendered.png" alt="rumd rendering a markdown document, dark theme">
+    </div>
+  </figure>
+</section>
+
+<section id="why">
+  <h2>Why rumd</h2>
+  <div class="cards">
+    <article class="card">
+      <h3>No Electron. Really.</h3>
+      <p>rumd is a single native binary built in pure Rust. No bundled browser,
+      no runtime, none of the gigabytes.</p>
+    </article>
+    <article class="card">
+      <h3>Light as a viewer should be</h3>
+      <p>A native egui app that starts fast and sips memory while it does its
+      one job well.</p>
+    </article>
+    <article class="card">
+      <h3>Private by default</h3>
+      <p>No accounts, no telemetry. Your documents never leave your machine.</p>
+    </article>
+    <article class="card">
+      <h3>Your edits are never overwritten</h3>
+      <p>If the file changes on disk while you have unsaved edits, rumd asks.
+      Reloading never clobbers your work.</p>
+    </article>
+    <article class="card">
+      <h3>Tested without a display</h3>
+      <p>Headless UI tests run on every platform in CI, so quality doesn't
+      depend on someone clicking around.</p>
+    </article>
+    <article class="card">
+      <h3>Open it your way</h3>
+      <p>Drag and drop, the file dialog, or straight from the shell:
+      <code>rumd README.md</code></p>
+    </article>
+  </div>
+</section>
+
+<section id="features">
+  <h2>Features</h2>
+  <div class="features">
+    <article class="feature">
+      <h3>Rendered markdown</h3>
+      <p>GFM tables, task lists, strikethrough, syntax-highlighted code
+      blocks, clickable links, and local images resolved relative to the
+      document.</p>
+    </article>
+    <article class="feature">
+      <h3>Split view</h3>
+      <p>Rendered and source side by side. The source pane is always
+      editable and the rendered pane follows as you type — save with
+      <kbd>Ctrl/Cmd+S</kbd>. Unsaved changes show a <code>•</code> in the
+      window title.</p>
+    </article>
+    <article class="feature">
+      <h3>Search everywhere</h3>
+      <p>Every visible occurrence highlighted in both views at once.
+      <kbd>Enter</kbd> and <kbd>Shift+Enter</kbd> step through matches.</p>
+    </article>
+    <article class="feature">
+      <h3>Dark &amp; light</h3>
+      <p>Follows your system theme by default; toggle any time with
+      <kbd>Ctrl/Cmd+D</kbd>.</p>
+    </article>
+    <article class="feature">
+      <h3>Zoom</h3>
+      <p>Zoom in, out, and reset with the usual keys — and it persists.</p>
+    </article>
+    <article class="feature">
+      <h3>It remembers</h3>
+      <p>Theme, zoom, and view mode are restored the next time you open
+      rumd.</p>
+    </article>
+    <article class="feature">
+      <h3>Live reload</h3>
+      <p>Refreshes automatically when the file changes on disk — degrades to
+      manual refresh if the OS watch limit is hit.</p>
+    </article>
+    <article class="feature">
+      <h3>Source done right</h3>
+      <p>Line numbers and markdown highlighting. Files that aren't valid
+      UTF-8 stay read-only, so rumd can never corrupt them.</p>
+    </article>
+  </div>
+</section>
+
+<section id="screenshots">
+  <h2>Screenshots</h2>
+  <div class="gallery">
+    <figure>
+      <div class="window">
+        <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+        <img src="assets/dark-rendered.png" alt="Rendered view in dark theme">
+      </div>
+      <figcaption>Rendered view, dark theme — tables, task lists and
+      syntax-highlighted code</figcaption>
+    </figure>
+    <figure>
+      <div class="window">
+        <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+        <img src="assets/dark-split.png" alt="Split view showing source and rendered panes">
+      </div>
+      <figcaption>Split view — edit the source, watch the rendered pane
+      follow</figcaption>
+    </figure>
+    <figure class="on-light">
+      <div class="window window-light">
+        <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+        <img src="assets/light-rendered.png" alt="Rendered view in light theme">
+      </div>
+      <figcaption>Light theme, for daylight hours</figcaption>
+    </figure>
+    <figure>
+      <div class="window">
+        <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+        <img src="assets/dark-search.png" alt="Search bar with highlighted matches">
+      </div>
+      <figcaption>Search — every match highlighted in both views</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="shortcuts">
+  <h2>Keyboard shortcuts</h2>
+  <table>
+    <thead><tr><th>Shortcut</th><th>Action</th></tr></thead>
+    <tbody>
+      <tr><td><kbd>Ctrl/Cmd+O</kbd></td><td>Open file</td></tr>
+      <tr><td><kbd>Ctrl/Cmd+S</kbd></td><td>Save edits</td></tr>
+      <tr><td><kbd>Ctrl/Cmd+E</kbd></td><td>Cycle rendered/split/source</td></tr>
+      <tr><td><kbd>Ctrl/Cmd+D</kbd></td><td>Toggle dark/light theme</td></tr>
+      <tr><td><kbd>Ctrl/Cmd+F</kbd></td><td>Search</td></tr>
+      <tr><td><kbd>Enter</kbd> / <kbd>Shift+Enter</kbd></td><td>Next / previous match</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>Close search</td></tr>
+      <tr><td><kbd>Ctrl/Cmd+=</kbd> / <kbd>Ctrl/Cmd+-</kbd> / <kbd>Ctrl/Cmd+0</kbd></td><td>Zoom in / out / reset</td></tr>
+      <tr><td><kbd>F5</kbd></td><td>Reload from disk (asks first if there are unsaved edits)</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="get-started">
+  <h2>Get started</h2>
+  <p>rumd is built from source with a recent stable Rust toolchain
+  (1.95 or newer).</p>
+  <h3>1. Prerequisites</h3>
+  <ul>
+    <li><strong>Linux:</strong> X11/Wayland development libraries, e.g. on
+    Debian/Ubuntu:</li>
+  </ul>
+  <pre><code>sudo apt install libxkbcommon-dev libwayland-dev libx11-dev</code></pre>
+  <ul>
+    <li><strong>macOS / Windows:</strong> no extra prerequisites.</li>
+  </ul>
+  <h3>2. Build</h3>
+  <pre><code>git clone https://github.com/TODO-rumd/rumd.git
+cd rumd
+cargo build --release</code></pre>
+  <h3>3. Read</h3>
+  <pre><code>./target/release/rumd README.md</code></pre>
+</section>
+
+</main>
+
+<footer>
+  <p><strong>rumd</strong> — markdown viewing, the Rust way. Built with Rust and egui.</p>
+  <p><a href="https://github.com/TODO-rumd/rumd">Source</a> · <a href="#top">Back to top</a></p>
+</footer>
+
+</body>
+</html>
