@@ -1,6 +1,72 @@
-//! Search support: match finding and document section splitting.
+//! Search support: match finding, document section splitting, and locating
+//! matches inside laid-out text.
 
 use std::ops::Range;
+
+use eframe::egui;
+
+/// Rects of one match (byte range into `text`) inside a laid-out galley,
+/// one per touched text row, translated by `galley_pos`.
+///
+/// A single `pos_from_cursor` pair mis-locates a match that starts at a row
+/// wrap: the wrap-boundary character maps to the END of the previous row
+/// (`layout_from_cursor` uses an inclusive row end), which yields an
+/// inverted rect that renders nothing. Clamping the match to each row's
+/// char range and addressing rows directly avoids that.
+pub fn match_range_rects(
+    galley: &egui::epaint::Galley,
+    galley_pos: egui::Pos2,
+    text: &str,
+    byte_range: Range<usize>,
+) -> Vec<egui::Rect> {
+    let start = char_index_of_byte(text, byte_range.start);
+    let end = char_index_of_byte(text, byte_range.end);
+    let mut rects = Vec::new();
+    let mut running = 0usize;
+    for (row_nr, row) in galley.rows.iter().enumerate() {
+        let count = row.char_count_excluding_newline().0;
+        let row_lo = running;
+        let row_hi = row_lo + count;
+        running += row.char_count_including_newline().0;
+        if start >= row_hi || end <= row_lo {
+            continue;
+        }
+        let ca = (start - row_lo).min(count);
+        let cb = (end - row_lo).min(count);
+        if ca >= cb {
+            continue;
+        }
+        let cursor = |column: usize| egui::epaint::text::cursor::LayoutCursor {
+            row: row_nr,
+            column: egui::text::CharIndex(column),
+        };
+        let from = galley.pos_from_layout_cursor(&cursor(ca));
+        let to = galley.pos_from_layout_cursor(&cursor(cb));
+        let rect = egui::Rect::from_min_max(from.min, to.max).translate(galley_pos.to_vec2());
+        if rect.is_positive() {
+            rects.push(rect);
+        }
+    }
+    rects
+}
+
+/// Rects of every match of `query` in a laid-out galley.
+pub fn match_rects_in_galley(
+    galley: &egui::epaint::Galley,
+    galley_pos: egui::Pos2,
+    text: &str,
+    query: &str,
+) -> Vec<egui::Rect> {
+    let query = query.trim();
+    let mut rects = Vec::new();
+    if query.is_empty() {
+        return rects;
+    }
+    for m in find_matches(text, query) {
+        rects.extend(match_range_rects(galley, galley_pos, text, m));
+    }
+    rects
+}
 
 /// Find all case-insensitive occurrences of `query` in `text`.
 /// Returns byte-offset ranges into the original `text`.
@@ -83,15 +149,17 @@ pub fn split_sections(text: &str) -> Vec<Range<usize>> {
         if trimmed.starts_with('#') {
             headings.push(offset);
         }
-        let next_is_content = lines
-            .get(i + 1)
-            .is_some_and(|&(_, l)| !l.trim().is_empty());
+        let next_is_content = lines.get(i + 1).is_some_and(|&(_, l)| !l.trim().is_empty());
         if content.trim().is_empty() && next_is_content {
             blanks.push(offset);
         }
     }
 
-    let boundaries: &[usize] = if headings.is_empty() { &blanks } else { &headings };
+    let boundaries: &[usize] = if headings.is_empty() {
+        &blanks
+    } else {
+        &headings
+    };
     let mut sections = Vec::new();
     let mut start = 0;
     for &b in boundaries {
@@ -109,6 +177,20 @@ pub fn split_sections(text: &str) -> Vec<Range<usize>> {
 /// Index of the section containing byte offset `at`.
 pub fn section_containing(sections: &[Range<usize>], at: usize) -> Option<usize> {
     sections.iter().position(|r| r.start <= at && at < r.end)
+}
+
+/// Section index for a cursor position: like [`section_containing`], but a
+/// cursor sitting at the very end of the text (past the last section's
+/// exclusive end) belongs to the last section.
+pub fn section_for_cursor(sections: &[Range<usize>], at: usize) -> Option<usize> {
+    if let Some(i) = section_containing(sections, at) {
+        return Some(i);
+    }
+    let last = sections.len().checked_sub(1)?;
+    sections
+        .last()
+        .is_some_and(|r| r.start <= at)
+        .then_some(last)
 }
 
 /// Live find-bar state.
@@ -217,7 +299,10 @@ mod tests {
         // interior blanks never split.
         assert_eq!(s.len(), 2);
         assert_eq!(s[0], 0..2);
-        assert_eq!(&md[s[1].clone()], "\n```\n# heading inside\nmore\n\nstill fenced");
+        assert_eq!(
+            &md[s[1].clone()],
+            "\n```\n# heading inside\nmore\n\nstill fenced"
+        );
     }
 
     #[test]
@@ -239,6 +324,22 @@ mod tests {
         assert_eq!(section_containing(&sections, 3), Some(0));
         assert_eq!(section_containing(&sections, 7), Some(1));
         assert_eq!(section_containing(&sections, 10), None);
+    }
+
+    #[test]
+    fn section_for_cursor_handles_inside_and_boundaries() {
+        let sections = vec![0..5, 5..10];
+        assert_eq!(section_for_cursor(&sections, 3), Some(0));
+        // Boundary bytes belong to the section that starts there.
+        assert_eq!(section_for_cursor(&sections, 5), Some(1));
+        // A cursor parked at the end of the text belongs to the last
+        // section, where section_containing finds nothing.
+        assert_eq!(section_for_cursor(&sections, 10), Some(1));
+    }
+
+    #[test]
+    fn section_for_cursor_empty_sections_is_none() {
+        assert_eq!(section_for_cursor(&[], 0), None);
     }
 
     #[test]

@@ -29,6 +29,11 @@ impl Document {
         })
     }
 
+    /// Write the current text back to the file it was loaded from.
+    pub fn save(&self) -> io::Result<()> {
+        fs::write(&self.path, &self.raw)
+    }
+
     /// Directory containing the document; base for relative image paths.
     pub fn dir(&self) -> Option<&Path> {
         self.path.parent()
@@ -125,6 +130,17 @@ mod tests {
     #[test]
     fn load_missing_file_is_error() {
         assert!(Document::load(Path::new("/nonexistent/rumd/nope.md")).is_err());
+    }
+
+    #[test]
+    fn save_writes_raw_to_disk() {
+        let path = temp_path("save.md");
+        std::fs::write(&path, "v1").unwrap();
+        let mut doc = Document::load(&path).unwrap();
+        doc.raw = "v2 edited".to_string();
+        doc.save().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v2 edited");
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

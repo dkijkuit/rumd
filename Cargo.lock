@@ -1001,8 +1001,6 @@ dependencies = [
 [[package]]
 name = "egui_commonmark"
 version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19e757b2a0639f5f75793e6936ad4c86e8b58ee379d23578ad6924ba9f75ec38"
 dependencies = [
  "egui",
  "egui_commonmark_backend",
@@ -3188,6 +3186,7 @@ dependencies = [
  "image",
  "notify",
  "rfd",
+ "winit",
 ]
 
 [[package]]

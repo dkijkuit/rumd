@@ -7,3 +7,8 @@
 # already existing elements were commented out
 
 #/target
+
+# Snapshot test artifacts
+/tests/snapshots/*.diff.png
+/tests/snapshots/*.new.png
+/tests/snapshots/*.old.png

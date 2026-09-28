@@ -1,8 +1,9 @@
+use eframe::egui;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use eframe::egui;
 
 use crate::document::{Document, FileWatcher, RELOAD_DEBOUNCE, debounce_ready};
+use crate::icons;
 use crate::search;
 use crate::source;
 use crate::viewer::RenderedView;
@@ -21,6 +22,7 @@ pub enum Action {
     ToggleTheme,
     Refresh,
     Search,
+    Save,
 }
 
 /// Map a modifier+key combination to a global action.
@@ -31,6 +33,7 @@ pub fn shortcut_action(mods: egui::Modifiers, key: egui::Key) -> Option<Action> 
         (true, egui::Key::E) => Some(Action::ToggleMode),
         (true, egui::Key::D) => Some(Action::ToggleTheme),
         (true, egui::Key::F) => Some(Action::Search),
+        (true, egui::Key::S) => Some(Action::Save),
         (false, egui::Key::F5) => Some(Action::Refresh),
         _ => None,
     }
@@ -135,12 +138,24 @@ pub fn prefs_path() -> Option<PathBuf> {
 
 pub struct App {
     pub doc: Option<Document>,
+    /// Text as last loaded from / saved to disk; `doc.raw` drifts from it
+    /// while the user edits.
+    saved_raw: Option<String>,
     pub mode: ViewMode,
     pub theme_pref: egui::ThemePreference,
     pub error: Option<String>,
     pub watcher: Option<FileWatcher>,
     pub watcher_failed: bool,
     pub changed_at: Option<Instant>,
+    /// When our own save last wrote; watcher events right after it are
+    /// self-caused and must not trigger a reload.
+    last_save_at: Option<Instant>,
+    /// The file changed on disk while there were unsaved edits; a banner
+    /// lets the user keep their edits or reload from disk.
+    conflict: bool,
+    /// A refresh (F5 / toolbar) was requested with unsaved edits; a banner
+    /// asks for confirmation before discarding them.
+    refresh_confirm: bool,
     pub search: search::SearchState,
     /// Mirrored from `ctx.zoom_factor()` every frame (egui's native zoom).
     pub zoom: f32,
@@ -163,15 +178,24 @@ pub struct App {
 }
 
 impl App {
+    /// How long after our own save watcher events are treated as
+    /// self-caused and dropped. An external change inside this window is
+    /// picked up by a manual refresh (F5).
+    const SAVE_RELOAD_SUPPRESSION: std::time::Duration = std::time::Duration::from_secs(1);
+
     pub fn new(initial: Option<PathBuf>) -> Self {
         let mut app = App {
             doc: None,
+            saved_raw: None,
             mode: ViewMode::Rendered,
             theme_pref: egui::ThemePreference::System,
             error: None,
             watcher: None,
             watcher_failed: false,
             changed_at: None,
+            last_save_at: None,
+            conflict: false,
+            refresh_confirm: false,
             search: search::SearchState::default(),
             zoom: 1.0,
             source_highlight: None,
@@ -230,6 +254,11 @@ impl App {
                     }
                 }
                 self.sections = search::split_sections(&doc.raw);
+                self.saved_raw = Some(doc.raw.clone());
+                self.conflict = false;
+                // Section heights come from the previous document; reset so
+                // virtualized placeholders measure the new text.
+                self.rendered.clear();
                 self.doc = Some(doc);
                 self.changed_at = None;
                 self.recompute_matches();
@@ -243,6 +272,9 @@ impl App {
     /// Drain watcher events; reload once the file has been quiet for
     /// RELOAD_DEBOUNCE. The file system watcher cannot wake the event loop,
     /// so while a change is pending this schedules repaints itself.
+    /// Events within [`Self::SAVE_RELOAD_SUPPRESSION`] of our own last save
+    /// are self-caused and dropped: reloading them would overwrite
+    /// keystrokes typed right after the save.
     fn poll_watcher(&mut self, ctx: &egui::Context) {
         let mut changed = false;
         if let Some(w) = &self.watcher {
@@ -250,13 +282,24 @@ impl App {
                 changed = true;
             }
         }
+        if changed
+            && self
+                .last_save_at
+                .is_some_and(|t| t.elapsed() < Self::SAVE_RELOAD_SUPPRESSION)
+        {
+            changed = false;
+        }
         if changed {
             self.changed_at = Some(Instant::now());
         }
         if let Some(t) = self.changed_at {
             if debounce_ready(Some(t), Instant::now(), RELOAD_DEBOUNCE) {
                 self.changed_at = None;
-                if let Some(path) = self.doc.as_ref().map(|d| d.path.clone()) {
+                if self.is_dirty() {
+                    // Unsaved edits must never be clobbered: hold the
+                    // reload and ask the user instead.
+                    self.conflict = true;
+                } else if let Some(path) = self.doc.as_ref().map(|d| d.path.clone()) {
                     self.open_path(&path);
                 }
             } else {
@@ -269,6 +312,28 @@ impl App {
     /// the current index (used on query edits, open, and reloads).
     /// Pending jumps queued against the previous text are dropped — the
     /// spec forbids scrolling to a stale target.
+    /// True while `doc.raw` differs from the text on disk.
+    pub fn is_dirty(&self) -> bool {
+        match (&self.doc, &self.saved_raw) {
+            (Some(doc), Some(saved)) => doc.raw != *saved,
+            _ => false,
+        }
+    }
+
+    /// The user edited the source text this frame: recompute everything
+    /// derived from it. Stale jumps and highlights are dropped, matching
+    /// reload behavior. `cursor_byte` then queues a fresh preview jump so
+    /// the rendered pane follows the edited spot.
+    fn on_document_edited(&mut self, cursor_byte: Option<usize>) {
+        if let Some(doc) = &self.doc {
+            self.sections = search::split_sections(&doc.raw);
+        }
+        self.recompute_matches();
+        if let Some(byte) = cursor_byte {
+            self.pending_render_jump = search::section_for_cursor(&self.sections, byte);
+        }
+    }
+
     pub fn recompute_matches(&mut self) {
         let text = self.doc.as_ref().map(|d| d.raw.as_str()).unwrap_or("");
         self.search.matches = search::find_matches(text, &self.search.query);
@@ -285,6 +350,22 @@ impl App {
             .search
             .current_match()
             .and_then(|m| search::section_containing(&self.sections, m.start));
+    }
+
+    /// What to highlight in rendered views: only while the find bar is
+    /// open, the query non-empty, and there is a current match whose
+    /// section can be located.
+    fn search_open_highlight(&self) -> Option<crate::viewer::SearchHighlight> {
+        if !self.search.open || self.search.query.is_empty() {
+            return None;
+        }
+        let m = self.search.current_match()?;
+        let section = search::section_containing(&self.sections, m.start)?;
+        Some(crate::viewer::SearchHighlight {
+            query: self.search.query.clone(),
+            section,
+            match_byte: m.start,
+        })
     }
 
     /// Close the find bar and forget the on-screen highlight.
@@ -376,6 +457,8 @@ impl App {
         self.zoom = ctx.zoom_factor();
         self.persist_prefs_if_changed();
         self.show_error_banner(ui);
+        self.show_conflict_banner(ui);
+        self.show_refresh_confirm_banner(ui);
         self.show_top_bar(ui);
         self.show_search_bar(ui);
         self.update_window_title(&ctx);
@@ -385,29 +468,62 @@ impl App {
                 self.show_empty_state(ui);
                 return;
             }
-            let doc = self.doc.as_ref().unwrap();
+            let search = self.search_open_highlight();
+            let theme = source::code_theme(self.theme_pref, &ctx);
+            let highlight = self.source_highlight.clone();
+            let source_query = self.search.open.then(|| self.search.query.clone());
+            let sections = self.sections.clone();
+            let doc = self.doc.as_mut().unwrap();
+            let mut render_jump = self.pending_render_jump;
+            let mut edited = false;
+            let mut edit_cursor = None;
             match self.mode {
                 ViewMode::Rendered => {
                     self.rendered
-                        .show(ui, &doc.raw, &self.sections, &mut self.pending_render_jump);
+                        .show(ui, &doc.raw, &sections, &mut render_jump, search.as_ref());
                 }
                 ViewMode::Source => {
-                    let theme = source::code_theme(self.theme_pref, &ctx);
-                    let highlight = self.source_highlight.clone();
-                    source::show(ui, &doc.raw, theme, highlight);
+                    let (changed, cursor) = source::show(
+                        ui,
+                        &mut doc.raw,
+                        doc.lossy,
+                        theme,
+                        source_query.as_deref(),
+                        highlight,
+                    );
+                    if changed {
+                        edited = true;
+                        edit_cursor = cursor;
+                    }
                 }
                 ViewMode::Split => {
-                    let theme = source::code_theme(self.theme_pref, &ctx);
-                    let sections = self.sections.clone();
-                    let mut render_jump = self.pending_render_jump;
-                    let highlight = self.source_highlight.clone();
+                    let raw = &mut doc.raw;
                     ui.columns(2, |columns| {
-                        self.rendered
-                            .show(&mut columns[0], &doc.raw, &sections, &mut render_jump);
-                        source::show(&mut columns[1], &doc.raw, theme, highlight);
+                        self.rendered.show(
+                            &mut columns[0],
+                            raw,
+                            &sections,
+                            &mut render_jump,
+                            search.as_ref(),
+                        );
+                        let (changed, cursor) = source::show(
+                            &mut columns[1],
+                            raw,
+                            doc.lossy,
+                            theme,
+                            source_query.as_deref(),
+                            highlight,
+                        );
+                        if changed {
+                            edited = true;
+                            edit_cursor = cursor;
+                        }
                     });
-                    self.pending_render_jump = render_jump;
                 }
+            }
+            self.pending_render_jump = render_jump;
+            if edited {
+                self.on_document_edited(edit_cursor);
             }
         });
     }
@@ -430,6 +546,7 @@ impl App {
                     self.error = None;
                 }
                 Some(Action::Refresh) => self.refresh(),
+                Some(Action::Save) => self.save_document(),
                 Some(Action::Search) => {
                     self.search.open = true;
                     self.recompute_matches();
@@ -503,6 +620,17 @@ impl App {
     }
 
     fn refresh(&mut self) {
+        if self.is_dirty() {
+            // Never discard unsaved edits without asking.
+            self.refresh_confirm = true;
+            return;
+        }
+        self.refresh_now();
+    }
+
+    /// Unconditionally reload from disk, discarding unsaved edits.
+    fn refresh_now(&mut self) {
+        self.refresh_confirm = false;
         match &self.doc {
             Some(doc) => {
                 let path = doc.path.clone();
@@ -510,6 +638,34 @@ impl App {
             }
             None => self.error = None,
         }
+    }
+
+    /// Shown after F5 / the Refresh button while there are unsaved edits:
+    /// reloading would discard them, so ask first.
+    fn show_refresh_confirm_banner(&mut self, ui: &mut egui::Ui) {
+        if !self.refresh_confirm {
+            return;
+        }
+        egui::Panel::top("refresh_confirm_banner").show(ui, |ui| {
+            egui::Frame::default()
+                .fill(ui.visuals().warn_fg_color.gamma_multiply(0.15))
+                .inner_margin(egui::Margin::symmetric(8, 4))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Cancel").clicked() {
+                            self.refresh_confirm = false;
+                        }
+                        if ui.button("Discard & reload").clicked() {
+                            self.refresh_now();
+                        }
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            "Discard unsaved changes and reload from disk?",
+                        );
+                    });
+                });
+        });
     }
 
     fn show_error_banner(&mut self, ui: &mut egui::Ui) {
@@ -531,84 +687,156 @@ impl App {
         }
     }
 
+    /// Shown while the file changed on disk and unsaved edits exist. The
+    /// user either reloads from disk (discarding edits) or keeps editing.
+    fn show_conflict_banner(&mut self, ui: &mut egui::Ui) {
+        if !self.conflict {
+            return;
+        }
+        egui::Panel::top("conflict_banner").show(ui, |ui| {
+            egui::Frame::default()
+                .fill(ui.visuals().warn_fg_color.gamma_multiply(0.15))
+                .inner_margin(egui::Margin::symmetric(8, 4))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Reload from disk").clicked() {
+                            self.conflict = false;
+                            // Already an explicit choice made after a
+                            // warning — no further confirmation.
+                            self.refresh_now();
+                        }
+                        if ui.button("Keep editing").clicked() {
+                            self.conflict = false;
+                        }
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            "The file changed on disk — you have unsaved edits.",
+                        );
+                    });
+                });
+        });
+    }
+
     fn show_top_bar(&mut self, ui: &mut egui::Ui) {
+        use icons::Icon;
         let ctx = ui.ctx().clone();
         let mut action: Option<Action> = None;
         let mut mode_clicked = false;
-        egui::Panel::top("top_bar").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui
-                    .button("Open")
-                    .on_hover_text("Open a file (Ctrl+O)")
-                    .clicked()
-                {
-                    action = Some(Action::Open);
-                }
-                if let Some(doc) = &self.doc {
-                    ui.strong(doc.file_name())
-                        .on_hover_text(doc.path.display().to_string());
-                    if doc.lossy {
-                        ui.label(
-                            egui::RichText::new(LOSSY_BADGE)
-                                .small()
-                                .color(ui.visuals().warn_fg_color),
-                        );
+        let doc_info = self
+            .doc
+            .as_ref()
+            .map(|doc| (doc.file_name(), doc.path.display().to_string(), doc.lossy));
+        egui::Panel::top("top_bar")
+            .frame(
+                egui::Frame::default()
+                    .fill(ui.visuals().window_fill)
+                    .inner_margin(egui::Margin::symmetric(8, 3)),
+            )
+            .show(ui, |ui| {
+                let bar_h = 32.0;
+                let full = egui::Rect::from_min_size(
+                    ui.cursor().min,
+                    egui::vec2(ui.available_width(), bar_h),
+                );
+                // Left group: open, refresh, mode segments.
+                let left_rect = {
+                    let mut child = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(full)
+                            .id_salt("top_bar_left")
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    );
+                    if icons::icon_button(&mut child, Icon::Folder, "Open", true)
+                        .on_hover_text("Open a file (Ctrl+O)")
+                        .clicked()
+                    {
+                        action = Some(Action::Open);
                     }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .button("Refresh")
+                    if icons::icon_button(&mut child, Icon::Refresh, "Refresh", doc_info.is_some())
                         .on_hover_text("Reload from disk (F5)")
                         .clicked()
                     {
                         action = Some(Action::Refresh);
                     }
-                    let theme_label = match ctx.theme() {
-                        egui::Theme::Dark => "Light theme",
-                        egui::Theme::Light => "Dark theme",
+                    if icons::icon_button(&mut child, Icon::Save, "Save", self.is_dirty())
+                        .on_hover_text("Save (Ctrl+S)")
+                        .clicked()
+                    {
+                        action = Some(Action::Save);
+                    }
+                    child.separator();
+                    // Clicking a segment selects that mode directly
+                    // (Ctrl+E cycles through the same three modes).
+                    if let Some(mode) = Self::mode_switcher(&mut child, self.mode)
+                        && mode != self.mode
+                    {
+                        self.mode = mode;
+                        mode_clicked = true;
+                    }
+                    child.min_rect()
+                };
+                // Right group: search and theme icons (plus lossy badge).
+                let right_rect = {
+                    let mut child = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(full)
+                            .id_salt("top_bar_right")
+                            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                    );
+                    let theme_icon = match ctx.theme() {
+                        egui::Theme::Dark => Icon::Sun,
+                        egui::Theme::Light => Icon::Moon,
                     };
-                    if ui
-                        .button(theme_label)
+                    if icons::icon_button(&mut child, theme_icon, "Toggle theme", true)
                         .on_hover_text("Switch theme (Ctrl+D)")
                         .clicked()
                     {
                         action = Some(Action::ToggleTheme);
                     }
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
-                        // Right-to-left layout: add in reverse to read
-                        // Rendered | Split | Source left-to-right. Clicking
-                        // a segment selects that mode directly (Ctrl+E cycles).
-                        if ui
-                            .selectable_label(self.mode == ViewMode::Source, "Source")
-                            .on_hover_text("Cycle view mode (Ctrl+E)")
-                            .clicked()
-                            && self.mode != ViewMode::Source
-                        {
-                            self.mode = ViewMode::Source;
-                            mode_clicked = true;
-                        }
-                        if ui
-                            .selectable_label(self.mode == ViewMode::Split, "Split")
-                            .on_hover_text("Cycle view mode (Ctrl+E)")
-                            .clicked()
-                            && self.mode != ViewMode::Split
-                        {
-                            self.mode = ViewMode::Split;
-                            mode_clicked = true;
-                        }
-                        if ui
-                            .selectable_label(self.mode == ViewMode::Rendered, "Rendered")
-                            .on_hover_text("Cycle view mode (Ctrl+E)")
-                            .clicked()
-                            && self.mode != ViewMode::Rendered
-                        {
-                            self.mode = ViewMode::Rendered;
-                            mode_clicked = true;
-                        }
-                    });
-                });
+                    if icons::icon_button(&mut child, Icon::Search, "Search", doc_info.is_some())
+                        .on_hover_text("Search (Ctrl+F)")
+                        .clicked()
+                    {
+                        action = Some(Action::Search);
+                    }
+                    if let Some((_, _, lossy)) = &doc_info
+                        && *lossy
+                    {
+                        child.label(
+                            egui::RichText::new(LOSSY_BADGE)
+                                .small()
+                                .color(child.visuals().warn_fg_color),
+                        );
+                    }
+                    child.min_rect()
+                };
+                // Center: the file name, centered between the two groups.
+                let title_rect = egui::Rect::from_min_max(
+                    egui::pos2(left_rect.right() + 8.0, full.top()),
+                    egui::pos2(right_rect.left() - 8.0, full.bottom()),
+                );
+                if let Some((name, path, _)) = &doc_info
+                    && title_rect.width() > 60.0
+                {
+                    let mut title = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(title_rect)
+                            .id_salt("top_bar_title")
+                            .layout(egui::Layout::centered_and_justified(
+                                egui::Direction::TopDown,
+                            )),
+                    );
+                    title
+                        .add(
+                            egui::Label::new(egui::RichText::new(name.clone()).strong())
+                                .halign(egui::Align::Center)
+                                .truncate(),
+                        )
+                        .on_hover_text(path.clone());
+                }
+                ui.expand_to_include_rect(full);
             });
-        });
         if action.is_some() || mode_clicked {
             self.error = None;
         }
@@ -623,6 +851,7 @@ impl App {
             }
             Some(Action::ToggleTheme) => self.toggle_theme(&ctx),
             Some(Action::Refresh) => self.refresh(),
+            Some(Action::Save) => self.save_document(),
             Some(Action::Search) => {
                 self.search.open = true;
                 self.recompute_matches();
@@ -630,6 +859,130 @@ impl App {
             }
             None => {}
         }
+    }
+
+    /// Write the current text to disk; on success the dirty flag clears
+    /// and self-caused watcher events are ignored briefly (they would
+    /// otherwise reload stale disk text over keystrokes typed right after
+    /// the save). Failures surface in the error banner.
+    fn save_document(&mut self) {
+        if let Some(doc) = &self.doc
+            && doc.lossy
+        {
+            self.error = Some(
+                "This file is not valid UTF-8 — saving is disabled to avoid data loss.".to_string(),
+            );
+            return;
+        }
+        let outcome = self
+            .doc
+            .as_ref()
+            .map(|doc| (doc.save(), doc.file_name(), doc.raw.clone()));
+        match outcome {
+            Some((Ok(()), _, raw)) => {
+                self.saved_raw = Some(raw);
+                self.last_save_at = Some(Instant::now());
+                self.conflict = false;
+                self.refresh_confirm = false;
+                self.error = None;
+            }
+            Some((Err(e), name, _)) => {
+                self.error = Some(format!("Failed to save {name}: {e}"));
+            }
+            None => {}
+        }
+    }
+
+    /// macOS-style segmented control for the three view modes.
+    ///
+    /// A soft `faint_bg_color` container holds rounded segments; the active
+    /// mode gets an accent chip instead of a hard-edged block. Returns the
+    /// mode whose segment was clicked, if any. Segments keep the accessible
+    /// labels "Rendered"/"Split"/"Source" that the kittest tests click on.
+    fn mode_switcher(ui: &mut egui::Ui, current: ViewMode) -> Option<ViewMode> {
+        const SEGMENT_PADDING: egui::Vec2 = egui::vec2(10.0, 4.0);
+        const SEGMENT_RADIUS: u8 = 5;
+        const CONTAINER_RADIUS: u8 = 7;
+        let mut clicked = None;
+        let modes = [
+            (ViewMode::Rendered, "Rendered"),
+            (ViewMode::Split, "Split"),
+            (ViewMode::Source, "Source"),
+        ];
+        let font_id = egui::TextStyle::Button.resolve(ui.style());
+        let sizes: Vec<egui::Vec2> = modes
+            .iter()
+            .map(|(_, label)| {
+                let galley = ui.painter().layout_no_wrap(
+                    label.to_string(),
+                    font_id.clone(),
+                    egui::Color32::WHITE,
+                );
+                galley.size() + 2.0 * SEGMENT_PADDING
+            })
+            .collect();
+        // A Frame allocates its rect anchored at the cursor with no
+        // cross-axis alignment, which left the tabs below the toolbar
+        // center. Reserving the exact container size first centers it like
+        // every other toolbar widget (icons allocate the same way).
+        let inner_w: f32 = sizes.iter().map(|s| s.x).sum::<f32>() + 2.0 * (sizes.len() - 1) as f32;
+        let inner_h = sizes.iter().map(|s| s.y).fold(0.0f32, f32::max);
+        let total = egui::vec2(inner_w + 4.0, inner_h + 4.0);
+        let (container_rect, _) = ui.allocate_exact_size(total, egui::Sense::hover());
+        ui.painter().rect_filled(
+            container_rect,
+            CONTAINER_RADIUS,
+            ui.visuals().faint_bg_color,
+        );
+        // Lay the segments out in a child pinned to the container rect with
+        // an explicit centered layout — the same pattern as the toolbar's
+        // icon group, which centers correctly. `Frame`/`ui.horizontal`
+        // re-anchor their content at the cursor and sag below the center.
+        let mut inner = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(container_rect.shrink2(egui::vec2(2.0, 2.0)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center))
+                .id_salt("mode_switcher_inner"),
+        );
+        inner.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
+        for ((mode, label), size) in modes.iter().zip(&sizes) {
+            let (rect, response) = inner.allocate_exact_size(*size, egui::Sense::click());
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+            let response = response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Cycle view mode (Ctrl+E)");
+            if response.clicked() {
+                clicked = Some(*mode);
+            }
+            let selected = *mode == current;
+            let pressed = response.hovered() || response.is_pointer_button_down_on();
+            let bg = if selected {
+                inner.visuals().selection.bg_fill
+            } else if pressed {
+                inner.style().interact(&response).weak_bg_fill
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+            if bg != egui::Color32::TRANSPARENT {
+                inner.painter().rect_filled(rect, SEGMENT_RADIUS, bg);
+            }
+            let text_color = if selected {
+                inner.visuals().selection.stroke.color
+            } else if pressed {
+                inner.visuals().widgets.hovered.fg_stroke.color
+            } else {
+                inner.visuals().weak_text_color()
+            };
+            inner.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                font_id.clone(),
+                text_color,
+            );
+        }
+        clicked
     }
 
     fn show_search_bar(&mut self, ui: &mut egui::Ui) {
@@ -684,13 +1037,20 @@ impl App {
     }
 
     fn update_window_title(&mut self, ctx: &egui::Context) {
-        let title = match &self.doc {
-            Some(doc) => format!("rumd - {}", doc.file_name()),
-            None => "rumd".to_string(),
-        };
+        let title = self.window_title();
         if self.last_title.as_deref() != Some(title.as_str()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.last_title = Some(title);
+        }
+    }
+
+    /// The window title: file name, with an unsaved-changes marker while
+    /// the text differs from disk.
+    fn window_title(&self) -> String {
+        match &self.doc {
+            Some(doc) if self.is_dirty() => format!("rumd - {} •", doc.file_name()),
+            Some(doc) => format!("rumd - {}", doc.file_name()),
+            None => "rumd".to_string(),
         }
     }
 }
@@ -712,6 +1072,15 @@ mod tests {
 
     fn temp_path(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("rumd_app_{}_{}", std::process::id(), name))
+    }
+
+    /// Stable path for snapshot tests: the rendered file name must not vary
+    /// between runs, so no pid in the name. One directory per test keeps
+    /// parallel tests from colliding.
+    fn stable_path(test: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("rumd_snap_{}", test));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("snapshot.md")
     }
 
     /// open_path changes the process working directory (for relative image
@@ -738,6 +1107,244 @@ mod tests {
     //         .build_ui(move |ui| {
     //             app_for_ui.borrow_mut().show(ui);
     //         });
+
+    #[test]
+    fn mode_segments_are_vertically_centered_with_toolbar_icons() {
+        use egui_kittest::kittest::Queryable;
+        let doc = temp_path("tabalign.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&doc, "# Tabs").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 200.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run();
+        harness.run();
+        let icon_center = harness.get_by_label("Refresh").rect().center().y;
+        for label in ["Rendered", "Split", "Source"] {
+            let segment_center = harness.get_by_label(label).rect().center().y;
+            assert!(
+                (segment_center - icon_center).abs() < 0.5,
+                "{label} center {segment_center:.1} must match icon center {icon_center:.1}"
+            );
+        }
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn editing_source_scrolls_the_preview_to_the_edited_section() {
+        let doc = temp_path("editjump.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        let mut md = String::new();
+        for i in 0..40 {
+            md.push_str(&format!("# Section {i}\n\nparagraph {i} text\n\n"));
+        }
+        std::fs::write(&doc, &md).unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        app.borrow_mut().mode = ViewMode::Split;
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1100.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(4);
+        assert!(
+            harness.query_by_label("paragraph 39 text").is_none(),
+            "precondition: the last section must start out of view"
+        );
+        let full_text = app.borrow().doc.as_ref().unwrap().raw.clone();
+        harness.get_by_value(&full_text).focus();
+        harness.run();
+        harness.get_by_value(&full_text).type_text("X");
+        let mut jumped = false;
+        for _ in 0..60 {
+            harness.run();
+            if harness.query_by_label("paragraph 39 text").is_some() {
+                jumped = true;
+                break;
+            }
+        }
+        assert!(
+            jumped,
+            "editing at the end must scroll the preview to the edited section"
+        );
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn refresh_with_unsaved_edits_asks_for_confirmation() {
+        let path = temp_path("refreshask.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&path, "# Refresh Ask\n\noriginal").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&path);
+        app.borrow_mut().mode = ViewMode::Source;
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        harness.get_by_value("# Refresh Ask\n\noriginal").focus();
+        harness.run();
+        harness
+            .get_by_value("# Refresh Ask\n\noriginal")
+            .type_text("X");
+        harness.run();
+        assert!(app.borrow().is_dirty());
+
+        // Meanwhile the file changed on disk.
+        std::fs::write(&path, "# Changed on disk\n\nv2").unwrap();
+
+        // Refresh must ask, not reload.
+        app.borrow_mut().refresh();
+        harness.run();
+        assert!(
+            harness
+                .query_by_label_contains("Discard unsaved changes")
+                .is_some(),
+            "refresh with unsaved edits must ask for confirmation"
+        );
+        let raw = app.borrow().doc.as_ref().unwrap().raw.clone();
+        assert!(raw.contains('X'), "nothing may reload before confirmation");
+        assert!(
+            app.borrow().is_dirty(),
+            "edits must be kept pending the answer"
+        );
+
+        // Confirming discards the edits and loads the disk version.
+        harness.get_by_label("Discard & reload").click();
+        let mut reloaded = false;
+        for _ in 0..40 {
+            harness.run();
+            if app
+                .borrow()
+                .doc
+                .as_ref()
+                .unwrap()
+                .raw
+                .contains("Changed on disk")
+            {
+                reloaded = true;
+                break;
+            }
+        }
+        assert!(reloaded, "confirmation must reload from disk");
+        assert!(!app.borrow().is_dirty(), "reload must clear the dirty flag");
+        assert!(
+            harness
+                .query_by_label_contains("Discard unsaved changes")
+                .is_none(),
+            "the banner must disappear once answered"
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn refresh_confirm_can_be_cancelled() {
+        let path = temp_path("refreshcancel.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&path, "# Refresh Cancel\n\noriginal").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&path);
+        app.borrow_mut().mode = ViewMode::Source;
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        harness.get_by_value("# Refresh Cancel\n\noriginal").focus();
+        harness.run();
+        harness
+            .get_by_value("# Refresh Cancel\n\noriginal")
+            .type_text("X");
+        harness.run();
+
+        std::fs::write(&path, "# Changed on disk\n\nv2").unwrap();
+        app.borrow_mut().refresh();
+        harness.run();
+        assert!(
+            harness
+                .query_by_label_contains("Discard unsaved changes")
+                .is_some()
+        );
+
+        harness.get_by_label("Cancel").click();
+        harness.run_steps(2);
+        assert!(
+            harness
+                .query_by_label_contains("Discard unsaved changes")
+                .is_none(),
+            "Cancel must dismiss the banner"
+        );
+        assert!(
+            app.borrow().is_dirty(),
+            "edits must survive a cancelled refresh"
+        );
+        let raw = app.borrow().doc.as_ref().unwrap().raw.clone();
+        assert!(raw.contains('X'), "edits must survive a cancelled refresh");
+        assert!(
+            !raw.contains("Changed on disk"),
+            "a cancelled refresh must not load the disk version"
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn refresh_when_clean_reloads_immediately() {
+        let path = temp_path("refreshclean.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&path, "# Refresh Clean\n\noriginal").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&path);
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+
+        std::fs::write(&path, "# Fresh from disk\n\nv2").unwrap();
+        app.borrow_mut().refresh();
+        let mut reloaded = false;
+        for _ in 0..40 {
+            harness.run();
+            if app
+                .borrow()
+                .doc
+                .as_ref()
+                .unwrap()
+                .raw
+                .contains("Fresh from disk")
+            {
+                reloaded = true;
+                break;
+            }
+        }
+        assert!(reloaded, "a clean refresh must reload without asking");
+        assert!(
+            harness
+                .query_by_label_contains("Discard unsaved changes")
+                .is_none(),
+            "a clean refresh must not show the confirmation banner"
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
 
     #[test]
     fn shortcut_actions_map_correctly() {
@@ -877,7 +1484,7 @@ mod tests {
     }
 
     #[test]
-    fn theme_toggle_flips_button_and_keeps_view() {
+    fn theme_button_toggles_theme_and_keeps_view() {
         let doc = temp_path("theme.md");
         let _cwd = CWD_LOCK.lock().unwrap();
 
@@ -893,19 +1500,113 @@ mod tests {
         harness.run();
         harness.get_by_label("Themed Doc");
 
-        // Which label the button shows first depends on the effective theme
-        // in the headless harness; clicking must flip it and keep the view.
-        let (first, second) = if harness.query_by_label("Light theme").is_some() {
-            ("Light theme", "Dark theme")
-        } else {
-            ("Dark theme", "Light theme")
-        };
-        harness.get_by_label(first).click();
+        let before = app.borrow().theme_pref;
+        harness.get_by_label("Toggle theme").click();
         harness.run();
+        let mid = app.borrow().theme_pref;
+        assert_ne!(mid, before, "one click must flip the theme preference");
         harness.get_by_label("Themed Doc");
-        harness.get_by_label(second).click();
+        harness.get_by_label("Toggle theme").click();
         harness.run();
+        let after = app.borrow().theme_pref;
+        assert_ne!(after, mid, "second click must flip the theme back");
+        // The toggle cycles Dark/Light absolutely (never back to System).
+        let mid_is_dark = mid == egui::ThemePreference::Dark;
+        assert_eq!(
+            after,
+            if mid_is_dark {
+                egui::ThemePreference::Light
+            } else {
+                egui::ThemePreference::Dark
+            }
+        );
         harness.get_by_label("Themed Doc");
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn search_icon_opens_search_bar() {
+        let doc = temp_path("searchicon.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&doc, "alpha and alpha").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run();
+        assert!(!app.borrow().search.open, "search starts closed");
+        harness.get_by_label("Search").click();
+        harness.run();
+        assert!(app.borrow().search.open, "Search button must open the bar");
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn refresh_disabled_without_document() {
+        let app = Rc::new(RefCell::new(App::new(None)));
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run();
+        assert!(
+            harness
+                .query_by(|n| n.label().as_deref() == Some("Refresh") && n.is_disabled())
+                .is_some(),
+            "Refresh must be disabled when no document is open"
+        );
+    }
+
+    #[test]
+    fn top_bar_snapshot() {
+        let doc = stable_path("top_bar");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&doc, "# Snapshot\n\nsome body text").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 200.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run();
+        harness.run();
+        // open_path changed the process CWD; pin the snapshot location.
+        let mut opts = egui_kittest::SnapshotOptions::default();
+        opts.output_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
+        harness.snapshot_options("top_bar", &opts);
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn top_bar_light_theme_snapshot() {
+        let doc = stable_path("top_bar_light");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&doc, "# Snapshot\n\nsome body text").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().theme_pref = egui::ThemePreference::Light;
+        app.borrow_mut().open_path(&doc);
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 200.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run();
+        harness.run();
+        let mut opts = egui_kittest::SnapshotOptions::default();
+        opts.output_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
+        harness.snapshot_options("top_bar_light", &opts);
         std::fs::remove_file(&doc).unwrap();
     }
 
@@ -920,6 +1621,418 @@ mod tests {
             });
         harness.run();
         harness.run();
+    }
+
+    #[test]
+    fn editing_source_marks_document_dirty() {
+        let doc = temp_path("dirty.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&doc, "# Dirty Doc\n\noriginal text").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        app.borrow_mut().mode = ViewMode::Source;
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        assert!(
+            !app.borrow().is_dirty(),
+            "a freshly opened document must not be dirty"
+        );
+        harness.get_by_value("# Dirty Doc\n\noriginal text").focus();
+        harness.run();
+        harness
+            .get_by_value("# Dirty Doc\n\noriginal text")
+            .type_text("X");
+        harness.run();
+        assert!(
+            app.borrow().is_dirty(),
+            "typing in the source pane must mark the document dirty"
+        );
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn editing_source_recomputes_search_matches() {
+        let doc = temp_path("editsearch.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&doc, "# Search Doc\n\nplain text").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        app.borrow_mut().mode = ViewMode::Source;
+        {
+            let mut a = app.borrow_mut();
+            a.search.open = true;
+            a.search.query = "needle".into();
+            a.recompute_matches();
+        }
+        assert_eq!(app.borrow().search.matches.len(), 0);
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        harness.get_by_value("# Search Doc\n\nplain text").focus();
+        harness.run();
+        harness
+            .get_by_value("# Search Doc\n\nplain text")
+            .type_text("needle");
+        harness.run();
+        assert_eq!(
+            app.borrow().search.matches.len(),
+            1,
+            "matches must be recomputed after edits"
+        );
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn ctrl_s_saves_dirty_document_to_disk() {
+        let doc = temp_path("saveto.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&doc, "# Save Doc\n\noriginal").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        app.borrow_mut().mode = ViewMode::Source;
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        harness.get_by_value("# Save Doc\n\noriginal").focus();
+        harness.run();
+        harness
+            .get_by_value("# Save Doc\n\noriginal")
+            .type_text("X");
+        harness.run();
+        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::S);
+        // The save fires the watcher; the app keeps requesting repaints
+        // until the debounced reload settles.
+        harness.run_steps(4);
+        let on_disk = std::fs::read_to_string(&doc).unwrap();
+        assert!(
+            on_disk.contains('X'),
+            "Ctrl+S must write the edited text, disk has {on_disk:?}"
+        );
+        assert!(!app.borrow().is_dirty(), "saving must clear the dirty flag");
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn save_button_saves_and_is_disabled_when_clean() {
+        let doc = temp_path("savebtn.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&doc, "# Save Button\n\noriginal").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        app.borrow_mut().mode = ViewMode::Source;
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        assert!(
+            harness
+                .query_by(|n| n.label().as_deref() == Some("Save") && n.is_disabled())
+                .is_some(),
+            "Save must be disabled while the document is clean"
+        );
+        harness.get_by_value("# Save Button\n\noriginal").focus();
+        harness.run();
+        harness
+            .get_by_value("# Save Button\n\noriginal")
+            .type_text("X");
+        harness.run();
+        harness.get_by_label("Save").click();
+        harness.run_steps(4);
+        let on_disk = std::fs::read_to_string(&doc).unwrap();
+        assert!(
+            on_disk.contains('X'),
+            "Save button must write the edited text, disk has {on_disk:?}"
+        );
+        assert!(!app.borrow().is_dirty(), "saving must clear the dirty flag");
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn window_title_marks_unsaved_changes() {
+        let doc = stable_path("title");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&doc, "# Titled").unwrap();
+        let mut app = App::new(None);
+        app.open_path(&doc);
+        assert_eq!(app.window_title(), "rumd - snapshot.md");
+        app.doc.as_mut().unwrap().raw.push_str(" edited");
+        assert_eq!(app.window_title(), "rumd - snapshot.md •");
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn reload_after_save_keeps_post_save_edits() {
+        let doc = temp_path("postsavesup.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&doc, "# Sup Doc\n\noriginal").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        app.borrow_mut().mode = ViewMode::Source;
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        harness.get_by_value("# Sup Doc\n\noriginal").focus();
+        harness.run();
+        harness.get_by_value("# Sup Doc\n\noriginal").type_text("X");
+        harness.run();
+        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::S);
+        harness.run_steps(2);
+        // Keep typing after the save. The save's own watcher event must
+        // never reload disk text over these edits.
+        harness
+            .get_by_value("# Sup Doc\n\noriginalX")
+            .type_text("Y");
+        let mut survived = true;
+        for _ in 0..40 {
+            harness.run_steps(1);
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            let raw = app.borrow().doc.as_ref().unwrap().raw.clone();
+            if !raw.contains('Y') || !raw.contains('X') {
+                survived = false;
+                break;
+            }
+        }
+        assert!(
+            survived,
+            "post-save edits must survive the self-caused reload, text: {:?}",
+            app.borrow().doc.as_ref().unwrap().raw
+        );
+        assert!(app.borrow().is_dirty(), "post-save edits must be dirty");
+        let on_disk = std::fs::read_to_string(&doc).unwrap();
+        assert!(on_disk.contains('X') && !on_disk.contains('Y'));
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn external_change_while_dirty_shows_conflict_and_keeps_edits() {
+        let path = temp_path("conflict.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&path, "# Conflict Doc\n\noriginal").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&path);
+        app.borrow_mut().mode = ViewMode::Source;
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        harness.get_by_value("# Conflict Doc\n\noriginal").focus();
+        harness.run();
+        harness
+            .get_by_value("# Conflict Doc\n\noriginal")
+            .type_text("X");
+        harness.run();
+
+        std::fs::write(&path, "# Changed Externally\n\nfrom disk").unwrap();
+        let mut showed = false;
+        for _ in 0..200 {
+            harness.run_steps(1);
+            if harness.query_by_label_contains("changed on disk").is_some() {
+                showed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(
+            showed,
+            "conflict banner must appear when the file changes on disk during edits"
+        );
+        let raw = app.borrow().doc.as_ref().unwrap().raw.clone();
+        assert!(raw.contains('X'), "unsaved edits must survive, got {raw:?}");
+        assert!(
+            !raw.contains("Externally"),
+            "disk version must not replace unsaved edits"
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn conflict_banner_buttons_resolve_the_conflict() {
+        let path = temp_path("conflictbtn.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&path, "# Conflict Btn\n\noriginal").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&path);
+        app.borrow_mut().mode = ViewMode::Source;
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        harness.get_by_value("# Conflict Btn\n\noriginal").focus();
+        harness.run();
+        harness
+            .get_by_value("# Conflict Btn\n\noriginal")
+            .type_text("X");
+        harness.run();
+
+        // Trigger the conflict.
+        std::fs::write(&path, "# Externally Changed\n\nv2").unwrap();
+        for _ in 0..200 {
+            harness.run_steps(1);
+            if harness.query_by_label_contains("changed on disk").is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        // "Keep editing" dismisses the banner and keeps both the edits and
+        // the dirty flag.
+        harness.get_by_label("Keep editing").click();
+        harness.run_steps(2);
+        assert!(
+            harness.query_by_label_contains("changed on disk").is_none(),
+            "Keep editing must dismiss the banner"
+        );
+        assert!(app.borrow().is_dirty(), "edits must still be unsaved");
+        let raw = app.borrow().doc.as_ref().unwrap().raw.clone();
+        assert!(raw.contains('X'), "edits must survive, got {raw:?}");
+
+        // A fresh external change raises the banner again; "Reload from
+        // disk" then discards the edits and adopts the disk version.
+        std::fs::write(&path, "# Externally Changed\n\nv3").unwrap();
+        let mut showed = false;
+        for _ in 0..200 {
+            harness.run_steps(1);
+            if harness.query_by_label_contains("changed on disk").is_some() {
+                showed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(showed, "second external change must raise the banner again");
+        harness.get_by_label("Reload from disk").click();
+        let mut reloaded = false;
+        for _ in 0..40 {
+            harness.run_steps(1);
+            if app.borrow().doc.as_ref().unwrap().raw.contains("v3") {
+                reloaded = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(reloaded, "Reload from disk must adopt the disk version");
+        assert!(!app.borrow().is_dirty(), "reload must clear the dirty flag");
+        // Settle past the click frame, which still paints the banner.
+        harness.run_steps(2);
+        assert!(
+            harness.query_by_label_contains("changed on disk").is_none(),
+            "reload must dismiss the banner"
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn ctrl_s_does_not_rewrite_lossy_files() {
+        let path = temp_path("lossysave.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        let original: &[u8] = &[b'#', b' ', 0xFF];
+        std::fs::write(&path, original).unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&path);
+        app.borrow_mut().mode = ViewMode::Source;
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::S);
+        harness.run_steps(2);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "saving must never rewrite a non-UTF-8 file"
+        );
+        assert!(
+            app.borrow()
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("not valid UTF-8")),
+            "the user must be told why saving is unavailable, got {:?}",
+            app.borrow().error
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn app_keeps_lossy_files_read_only() {
+        use egui_kittest::kittest::Queryable;
+        let path = temp_path("lossyapp.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&path, [b'#', b' ', 0xFF]).unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&path);
+        app.borrow_mut().mode = ViewMode::Source;
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        let editor = harness.query_by(|n| {
+            n.role() == egui::accesskit::Role::MultilineTextInput
+                && n.value().is_some_and(|v| v.contains('\u{FFFD}'))
+        });
+        assert!(
+            editor.is_some(),
+            "the lossy text must be shown in the source pane"
+        );
+        editor.unwrap().focus();
+        harness.run();
+        harness
+            .get_by(|n| {
+                n.role() == egui::accesskit::Role::MultilineTextInput
+                    && n.value().is_some_and(|v| v.contains('\u{FFFD}'))
+            })
+            .type_text("X");
+        harness.run();
+        assert!(
+            !app.borrow().is_dirty(),
+            "a lossy document must not become editable"
+        );
+        assert_eq!(
+            app.borrow().doc.as_ref().unwrap().raw.matches('X').count(),
+            0,
+            "typing must not reach the text of a lossy document"
+        );
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
@@ -1010,10 +2123,7 @@ mod tests {
                 app_for_ui.borrow_mut().show(ui);
             });
         harness.run_steps(2);
-        assert!(
-            harness.query_by_label("0/0").is_none(),
-            "bar starts closed"
-        );
+        assert!(harness.query_by_label("0/0").is_none(), "bar starts closed");
         harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::F);
         harness.run();
         harness.get_by_label("1/2");
@@ -1208,10 +2318,7 @@ mod tests {
         harness.get_by_label("rumd");
         harness.get_by_label("Open…").click();
         harness.run();
-        assert!(
-            dialog_used.get(),
-            "Open… button must reach the dialog hook"
-        );
+        assert!(dialog_used.get(), "Open… button must reach the dialog hook");
     }
 
     #[test]
@@ -1479,5 +2586,127 @@ mod tests {
             "pending reload did not schedule a repaint wakeup, delay {delay:?}"
         );
         std::fs::remove_file(&path).unwrap();
+    }
+
+    // --- perf probe: Rendered <-> Split switch frame cost -----------------
+    // Temporary measurement harness. Run with:
+    //   cargo test --release perf_probe_mode_switch -- --ignored --nocapture
+
+    fn large_markdown(sections: usize) -> String {
+        let mut md = String::new();
+        md.push_str("# Perf Probe Document\n\n");
+        for i in 0..sections {
+            md.push_str(&format!("## Section {i}\n\n"));
+            md.push_str(
+                "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod \
+                 tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim \
+                 veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea \
+                 commodo consequat. Duis aute irure dolor in reprehenderit in voluptate.\n\n",
+            );
+            for j in 0..6 {
+                md.push_str(&format!(
+                    "- item {i}.{j} with some longer wrapping text to fill the line width out\n"
+                ));
+            }
+            md.push_str("\n```rust\n");
+            for j in 0..8 {
+                md.push_str(&format!(
+                    "fn step_{j}(x: usize) -> usize {{ x.wrapping_mul({i}).wrapping_add({j}) }}\n"
+                ));
+            }
+            md.push_str("```\n\n");
+            md.push_str("| col a | col b | col c | col d |\n|---|---|---|---|\n");
+            for j in 0..3 {
+                md.push_str(&format!("| {i}{j} | cell | cell | cell |\n"));
+            }
+            md.push('\n');
+        }
+        md
+    }
+
+    fn timed_step(harness: &mut Harness<'_, ()>) -> f64 {
+        let t = std::time::Instant::now();
+        harness.run();
+        t.elapsed().as_secs_f64() * 1000.0
+    }
+
+    fn median(mut v: Vec<f64>) -> f64 {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[v.len() / 2]
+    }
+
+    fn stats(label: &str, v: &[f64]) {
+        println!(
+            "{label}: median {:.1} ms, max {:.1} ms, first {:.1} ms",
+            median(v.to_vec()),
+            v.iter().cloned().fold(0.0, f64::max),
+            v[0]
+        );
+    }
+
+    #[test]
+    #[ignore = "perf probe: cargo test --release perf_probe_mode_switch -- --ignored --nocapture"]
+    fn perf_probe_mode_switch_timing() {
+        let doc = temp_path("perf.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        let md = large_markdown(40);
+        std::fs::write(&doc, &md).unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 800.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+
+        for _ in 0..3 {
+            timed_step(&mut harness); // warmup fonts, caches, allocator
+        }
+        let rendered: Vec<f64> = (0..10).map(|_| timed_step(&mut harness)).collect();
+
+        // Differential: is the switch spike one-time warm-up (H2) or paid on
+        // every toggle because the new wrap width re-shapes everything (H1)?
+        let mut toggles: Vec<f64> = Vec::new();
+        for phase in 0..6 {
+            let next = if phase % 2 == 0 {
+                ViewMode::Split
+            } else {
+                ViewMode::Rendered
+            };
+            app.borrow_mut().mode = next;
+            toggles.push(timed_step(&mut harness));
+            timed_step(&mut harness); // let caches settle at this width
+        }
+        println!("toggle first-frames: {:?}", toggles);
+
+        app.borrow_mut().mode = ViewMode::Rendered;
+        for _ in 0..5 {
+            timed_step(&mut harness);
+        }
+        let back: Vec<f64> = (0..5).map(|_| timed_step(&mut harness)).collect();
+
+        stats("rendered      ", &rendered);
+        stats("back rendered ", &back);
+        println!(
+            "toggle first-frames median {:.1} ms, max {:.1} ms",
+            median(toggles.clone()),
+            toggles.iter().cloned().fold(0.0, f64::max)
+        );
+
+        // "Snappy" budget: every toggle frame must stay under ~2 refreshes
+        // steady-state and ~6 for the switch frame itself.
+        assert!(
+            toggles.iter().cloned().fold(0.0, f64::max) < 100.0,
+            "switch frames peaked at {:.1} ms (budget 100 ms)",
+            toggles.iter().cloned().fold(0.0, f64::max)
+        );
+        assert!(
+            median(back.clone()) < 33.0,
+            "steady rendered frame median {:.1} ms (budget 33 ms)",
+            median(back)
+        );
+        std::fs::remove_file(&doc).unwrap();
     }
 }

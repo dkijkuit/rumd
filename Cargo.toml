@@ -6,11 +6,18 @@ rust-version = "1.95"
 
 [dependencies]
 eframe = "0.36"
+# Vendored with a small patch: tables cap column width so wide tables wrap
+# inside the reading column instead of overflowing it (see vendor/egui_commonmark).
 egui_commonmark = { version = "0.25", features = ["better_syntax_highlighting"] }
 egui_code_editor = "0.4"
 notify = "8"
 rfd = "0.17"
+# Backend forcing for drag-and-drop (winit 0.30 has no Wayland DnD support)
+winit = { version = "0.30", features = ["x11"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+[patch.crates-io]
+egui_commonmark = { path = "vendor/egui_commonmark" }
 
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["snapshot", "wgpu"] }
