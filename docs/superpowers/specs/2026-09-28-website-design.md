@@ -126,6 +126,7 @@ at `website/assets/` (same mechanism the existing tests use for
 - Every feature claim on the site is traceable to README.md; nothing
   invented.
 - No external network requests (fonts, CDNs, analytics).
-- The placeholder GitHub URL is trivial to find and replace (one spot, plus
-  comment).
+- The placeholder GitHub URL is a single string, replaced with one
+  find-and-replace; its first occurrence carries an HTML comment marking
+  it as a placeholder.
 - The throwaway screenshot test is removed from the codebase after capture.
