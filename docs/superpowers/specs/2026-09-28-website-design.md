@@ -81,7 +81,8 @@ at `website/assets/` (same mechanism the existing tests use for
      the machine.
    - Edits are never overwritten: conflict banner when the file changes on
      disk under unsaved edits.
-   - Quality backed by headless UI tests that run on CI without a display.
+   - Quality backed by headless UI tests that run on every platform
+     without a display server.
    - Opens anywhere: drag-and-drop, file dialog, or CLI argument.
 4. **Features grid** (the *what*, from README):
    - Rendered markdown: GFM tables, task lists, strikethrough,

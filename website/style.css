@@ -10,7 +10,10 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
-html { scroll-behavior: smooth; }
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 5.5rem;
+}
 
 body {
   background: var(--bg);
@@ -254,6 +257,7 @@ footer p + p { margin-top: 0.4rem; }
 /* Responsive */
 
 @media (max-width: 880px) {
+  html { scroll-padding-top: 10.5rem; }
   .hero { grid-template-columns: 1fr; gap: 2.2rem; }
   .gallery { grid-template-columns: 1fr; }
   section { padding-top: 3.2rem; }
