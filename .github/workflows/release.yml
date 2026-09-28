@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-14
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          NAME="rumd-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$NAME"
+          cp "target/${{ matrix.target }}/release/rumd" "$NAME"/
+          cp README.md "$NAME"/
+          tar czf "$NAME.tar.gz" "$NAME"
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+          else
+            shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+          fi
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $name = "rumd-$($env:GITHUB_REF_NAME)-${{ matrix.target }}"
+          New-Item -ItemType Directory "$name"
+          Copy-Item "target/${{ matrix.target }}/release/rumd.exe" "$name/"
+          Copy-Item "README.md" "$name/"
+          Compress-Archive -Path "$name" -DestinationPath "$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.target }}
+          path: |
+            rumd-*.tar.gz
+            rumd-*.tar.gz.sha256
+            rumd-*.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*
+          body: |
+            Unpack the archive for your platform and run the `rumd` binary.
+
+            - **Linux** needs the X11/Wayland client libraries at runtime
+              (`libxkbcommon`, `libwayland-client`, `libX11`), which most
+              desktops already have.
+            - **macOS**: the binary is unsigned — if Gatekeeper blocks it,
+              run `xattr -cr rumd` once, or right-click → Open.
+            - **Windows**: SmartScreen may warn on first run —
+              "More info" → "Run anyway".
