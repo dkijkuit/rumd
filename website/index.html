@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>rumd — a cross-platform markdown viewer in pure Rust</title>
 <meta name="description" content="rumd is a native markdown viewer with live reload, split view editing, search, and full GFM support. Pure Rust, no Electron, no telemetry.">
-<link rel="icon" type="image/png" href="assets/logo_without_bg.png">
+<link rel="icon" type="image/png" href="assets/logo.png">
 <link rel="stylesheet" href="style.css">
 </head>
 <body id="top">
 
 <header class="nav">
   <a class="brand" href="#top">
-    <img src="assets/logo_without_bg.png" alt="">rumd
+    <img src="assets/logo.png" alt="">rumd
   </a>
   <nav>
     <a href="#why">Why rumd</a>
@@ -28,17 +28,16 @@
 <main>
 
 <section class="hero">
-  <div class="hero-text">
-    <h1>A cross-platform markdown viewer in <span class="accent">pure Rust</span></h1>
-    <p class="lead">rumd renders your markdown live — in a clean reading view
-    or side by side with its source — and refreshes automatically when the
-    file changes on disk.</p>
-    <div class="cta">
-      <a class="btn" href="#get-started">Get started</a>
-      <a class="btn btn-ghost" href="https://github.com/TODO-rumd/rumd">View source</a>
-    </div>
-    <p class="platforms">Linux · macOS · Windows — a single native binary</p>
+  <img class="hero-logo" src="assets/logo.png" alt="The rumd logo: a markdown document marked &lt;M&gt;">
+  <h1>A cross-platform markdown viewer in <span class="accent">pure Rust</span></h1>
+  <p class="lead">rumd renders your markdown live — in a clean reading view
+  or side by side with its source — and refreshes automatically when the
+  file changes on disk.</p>
+  <div class="cta">
+    <a class="btn" href="#get-started">Get started</a>
+    <a class="btn btn-ghost" href="https://github.com/TODO-rumd/rumd">View source</a>
   </div>
+  <p class="platforms">Linux · macOS · Windows — a single native binary</p>
   <figure class="hero-shot">
     <div class="window">
       <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
@@ -48,6 +47,7 @@
 </section>
 
 <section id="why">
+  <p class="eyebrow">The pitch</p>
   <h2>Why rumd</h2>
   <div class="cards">
     <article class="card">
@@ -83,6 +83,7 @@
 </section>
 
 <section id="features">
+  <p class="eyebrow">Everything it does</p>
   <h2>Features</h2>
   <div class="features">
     <article class="feature">
@@ -131,6 +132,7 @@
 </section>
 
 <section id="screenshots">
+  <p class="eyebrow">See it in action</p>
   <h2>Screenshots</h2>
   <div class="gallery">
     <figure>
@@ -167,6 +169,7 @@
 </section>
 
 <section id="shortcuts">
+  <p class="eyebrow">At your fingertips</p>
   <h2>Keyboard shortcuts</h2>
   <table>
     <thead><tr><th>Shortcut</th><th>Action</th></tr></thead>
@@ -185,6 +188,7 @@
 </section>
 
 <section id="get-started">
+  <p class="eyebrow">Up and running</p>
   <h2>Get started</h2>
   <p>rumd is built from source with a recent stable Rust toolchain
   (1.95 or newer).</p>
@@ -208,6 +212,7 @@ cargo build --release</code></pre>
 </main>
 
 <footer>
+  <img class="footer-logo" src="assets/logo.png" alt="">
   <p><strong>rumd</strong> — markdown viewing, the Rust way. Built with Rust and egui.</p>
   <p><a href="https://github.com/TODO-rumd/rumd">Source</a> · <a href="#top">Back to top</a></p>
 </footer>
