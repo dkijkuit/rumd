@@ -28,6 +28,7 @@
 <main>
 
 <section class="hero">
+  <p class="pill">Pure Rust · No Electron · 100% local</p>
   <img class="hero-logo" src="assets/logo.png" alt="The rumd logo: a markdown document marked &lt;M&gt;">
   <h1>A cross-platform markdown viewer in <span class="accent">pure Rust</span></h1>
   <p class="lead">rumd renders your markdown live — in a clean reading view
@@ -39,10 +40,12 @@
   </div>
   <p class="platforms">Linux · macOS · Windows — a single native binary</p>
   <figure class="hero-shot">
-    <div class="window">
-      <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
-      <img src="assets/dark-rendered.png" alt="rumd rendering a markdown document, dark theme">
-    </div>
+    <a class="shot-link" href="#shot-hero" aria-label="Open screenshot full size">
+      <div class="window">
+        <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+        <img src="assets/dark-rendered.png" alt="rumd rendering a markdown document, dark theme">
+      </div>
+    </a>
   </figure>
 </section>
 
@@ -87,12 +90,14 @@
   <h2>Features</h2>
   <div class="features">
     <article class="feature">
+      <div class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M10 12h5M10 16h5"/></svg></div>
       <h3>Rendered markdown</h3>
       <p>GFM tables, task lists, strikethrough, syntax-highlighted code
       blocks, clickable links, and local images resolved relative to the
       document.</p>
     </article>
     <article class="feature">
+      <div class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg></div>
       <h3>Split view</h3>
       <p>Rendered and source side by side. The source pane is always
       editable and the rendered pane follows as you type — save with
@@ -100,30 +105,36 @@
       window title.</p>
     </article>
     <article class="feature">
+      <div class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.2-4.2"/></svg></div>
       <h3>Search everywhere</h3>
       <p>Every visible occurrence highlighted in both views at once.
       <kbd>Enter</kbd> and <kbd>Shift+Enter</kbd> step through matches.</p>
     </article>
     <article class="feature">
+      <div class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 13.5A8 8 0 1 1 10.5 4a6.5 6.5 0 0 0 9.5 9.5z"/></svg></div>
       <h3>Dark &amp; light</h3>
       <p>Follows your system theme by default; toggle any time with
       <kbd>Ctrl/Cmd+D</kbd>.</p>
     </article>
     <article class="feature">
+      <div class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.2-4.2M11 8.5v5M8.5 11h5"/></svg></div>
       <h3>Zoom</h3>
       <p>Zoom in, out, and reset with the usual keys — and it persists.</p>
     </article>
     <article class="feature">
+      <div class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3h10v18l-5-4-5 4z"/></svg></div>
       <h3>It remembers</h3>
       <p>Theme, zoom, and view mode are restored the next time you open
       rumd.</p>
     </article>
     <article class="feature">
+      <div class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.6-5.7L20 8.5"/><path d="M20 3.5v5h-5"/><path d="M20 12a8 8 0 0 1-13.6 5.7L4 15.5"/><path d="M4 20.5v-5h5"/></svg></div>
       <h3>Live reload</h3>
       <p>Refreshes automatically when the file changes on disk — degrades to
       manual refresh if the OS watch limit is hit.</p>
     </article>
     <article class="feature">
+      <div class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m8 8-4 4 4 4M16 8l4 4-4 4"/></svg></div>
       <h3>Source done right</h3>
       <p>Line numbers and markdown highlighting. Files that aren't valid
       UTF-8 stay read-only, so rumd can never corrupt them.</p>
@@ -136,33 +147,41 @@
   <h2>Screenshots</h2>
   <div class="gallery">
     <figure>
-      <div class="window">
-        <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
-        <img src="assets/dark-rendered.png" alt="Rendered view in dark theme">
-      </div>
+      <a class="shot-link" href="#shot-rendered" aria-label="Open screenshot full size">
+        <div class="window">
+          <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+          <img src="assets/dark-rendered.png" alt="Rendered view in dark theme">
+        </div>
+      </a>
       <figcaption>Rendered view, dark theme — tables, task lists and
       syntax-highlighted code</figcaption>
     </figure>
     <figure>
-      <div class="window">
-        <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
-        <img src="assets/dark-split.png" alt="Split view showing source and rendered panes">
-      </div>
+      <a class="shot-link" href="#shot-split" aria-label="Open screenshot full size">
+        <div class="window">
+          <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+          <img src="assets/dark-split.png" alt="Split view showing source and rendered panes">
+        </div>
+      </a>
       <figcaption>Split view — edit the source, watch the rendered pane
       follow</figcaption>
     </figure>
     <figure class="on-light">
-      <div class="window window-light">
-        <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
-        <img src="assets/light-rendered.png" alt="Rendered view in light theme">
-      </div>
+      <a class="shot-link" href="#shot-light" aria-label="Open screenshot full size">
+        <div class="window window-light">
+          <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+          <img src="assets/light-rendered.png" alt="Rendered view in light theme">
+        </div>
+      </a>
       <figcaption>Light theme, for daylight hours</figcaption>
     </figure>
     <figure>
-      <div class="window">
-        <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
-        <img src="assets/dark-search.png" alt="Search bar with highlighted matches">
-      </div>
+      <a class="shot-link" href="#shot-search" aria-label="Open screenshot full size">
+        <div class="window">
+          <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+          <img src="assets/dark-search.png" alt="Search bar with highlighted matches">
+        </div>
+      </a>
       <figcaption>Search — every match highlighted in both views</figcaption>
     </figure>
   </div>
@@ -216,6 +235,32 @@ cargo build --release</code></pre>
   <p><strong>rumd</strong> — markdown viewing, the Rust way. Built with Rust and egui.</p>
   <p><a href="https://github.com/TODO-rumd/rumd">Source</a> · <a href="#top">Back to top</a></p>
 </footer>
+
+<div class="lightbox" id="shot-hero" role="dialog" aria-label="Screenshot full size">
+  <a class="lightbox-backdrop" href="#top" aria-label="Close"></a>
+  <img src="assets/dark-rendered.png" alt="rumd rendering a markdown document, dark theme">
+  <a class="lightbox-close" href="#top">Close ×</a>
+</div>
+<div class="lightbox" id="shot-rendered" role="dialog" aria-label="Screenshot full size">
+  <a class="lightbox-backdrop" href="#screenshots" aria-label="Close"></a>
+  <img src="assets/dark-rendered.png" alt="Rendered view in dark theme">
+  <a class="lightbox-close" href="#screenshots">Close ×</a>
+</div>
+<div class="lightbox" id="shot-split" role="dialog" aria-label="Screenshot full size">
+  <a class="lightbox-backdrop" href="#screenshots" aria-label="Close"></a>
+  <img src="assets/dark-split.png" alt="Split view showing source and rendered panes">
+  <a class="lightbox-close" href="#screenshots">Close ×</a>
+</div>
+<div class="lightbox" id="shot-light" role="dialog" aria-label="Screenshot full size">
+  <a class="lightbox-backdrop" href="#screenshots" aria-label="Close"></a>
+  <img src="assets/light-rendered.png" alt="Rendered view in light theme">
+  <a class="lightbox-close" href="#screenshots">Close ×</a>
+</div>
+<div class="lightbox" id="shot-search" role="dialog" aria-label="Screenshot full size">
+  <a class="lightbox-backdrop" href="#screenshots" aria-label="Close"></a>
+  <img src="assets/dark-search.png" alt="Search bar with highlighted matches">
+  <a class="lightbox-close" href="#screenshots">Close ×</a>
+</div>
 
 </body>
 </html>
