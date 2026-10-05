@@ -1,5 +1,7 @@
 /target
 /.superpowers/
+/build/
+/.flatpak-builder-state/
 
 
 # Added by cargo

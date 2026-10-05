@@ -10,6 +10,10 @@ changes on disk.
   highlighted code blocks, clickable links, local images (relative paths
   resolve against the document's directory)
 - Centered reading column with adjusted typography
+- Collapsible table of contents (`Ctrl/Cmd+T`): a resizable sidebar on the
+  left lists every heading; groups expand/collapse, and clicking an entry
+  jumps the rendered view to that heading (or moves the source caret in
+  Source view)
 - Split view: rendered and source side by side
 - Editing: the source pane is always editable (Source and Split views) and
   the rendered view updates live as you type, following the edited section;
@@ -23,10 +27,10 @@ changes on disk.
   subtle wash (`Enter`/`Shift+Enter` steps through matches)
 - Source view: line numbers, markdown highlighting
 - Dark/light theme, follows the system theme by default
-- Zoom (`Ctrl/Cmd+=`, `Ctrl/Cmd+-`, `Ctrl/Cmd+0`)
+- Zoom (`Ctrl/Cmd+=`, `Ctrl/Cmd+-`, `Ctrl/Cmd+0`, `Ctrl/Cmd+scroll`)
 - Auto-reload on file changes (degrades to manual refresh if the OS
   watch limit is hit)
-- Theme, zoom, and view mode persist between runs
+- Theme, zoom, view mode, and ToC visibility persist between runs
 - Open via drag-and-drop, file dialog, or command line: `rumd README.md`
 
 ## Shortcuts
@@ -36,11 +40,13 @@ changes on disk.
 | `Ctrl/Cmd+O` | Open file |
 | `Ctrl/Cmd+S` | Save edits |
 | `Ctrl/Cmd+E` | Cycle rendered/split/source |
+| `Ctrl/Cmd+T` | Toggle the table of contents |
 | `Ctrl/Cmd+D` | Toggle dark/light theme |
 | `Ctrl/Cmd+F` | Search |
 | `Enter` / `Shift+Enter` | Next / previous match |
 | `Esc` | Close search |
 | `Ctrl/Cmd+=` / `Ctrl/Cmd+-` / `Ctrl/Cmd+0` | Zoom in / out / reset |
+| `Ctrl/Cmd+scroll` / pinch | Zoom in / out |
 | `F5` | Reload from disk (asks first if there are unsaved edits) |
 
 ## Building
@@ -57,6 +63,20 @@ cargo build --release
 ```
 
 The binary is at `target/release/rumd`.
+
+## Flatpak
+
+Build and install from source as a system-wide Flatpak
+(`flatpak-builder` and the `org.freedesktop.Platform//26.08` runtime,
+SDK, and `rust-stable` extension are required):
+
+```sh
+flatpak install --system flathub \
+  org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08 \
+  org.freedesktop.Sdk.Extension.rust-stable//26.08
+flatpak-builder --install --system --force-clean build flatpak/io.github.dkijkuit.rumd.yml
+flatpak run io.github.dkijkuit.rumd
+```
 
 ## Testing
 

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.dkijkuit.rumd</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>rumd</name>
+  <summary>Cross-platform markdown viewer and editor</summary>
+  <description>
+    <p>
+      rumd renders Markdown with a centered reading column and refreshes
+      automatically when the file changes on disk. The source pane is always
+      editable, with the rendered view updating live as you type.
+    </p>
+    <p>Features include:</p>
+    <ul>
+      <li>GFM tables, task lists, strikethrough, and syntax-highlighted code blocks</li>
+      <li>Split view with editable source and live preview</li>
+      <li>Highlighted search across rendered and source views</li>
+      <li>Dark/light theme, zoom, and auto-reload on file changes</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.dkijkuit.rumd.desktop</launchable>
+  <url type="homepage">https://github.com/dkijkuit/rumd</url>
+  <content_rating type="oars-1.1"/>
+  <provides>
+    <binary>rumd</binary>
+  </provides>
+  <releases>
+    <release version="0.1.0" date="2026-10-05">
+      <description><p>First packaged release.</p></description>
+    </release>
+  </releases>
+</component>

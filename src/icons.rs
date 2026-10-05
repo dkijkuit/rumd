@@ -16,6 +16,7 @@ pub enum Icon {
     Sun,
     Moon,
     Search,
+    Toc,
 }
 
 impl Icon {
@@ -28,6 +29,7 @@ impl Icon {
             Icon::Sun => paint_sun(painter, center, h, color),
             Icon::Moon => paint_moon(painter, center, h, color),
             Icon::Search => paint_search(painter, center, h, color),
+            Icon::Toc => paint_toc(painter, center, h, color),
         }
     }
 }
@@ -245,6 +247,22 @@ fn paint_search(painter: &egui::Painter, c: Pos2, h: f32, color: egui::Color32) 
     let from = lens_center + dir * lens_radius;
     let to = c + dir * h * 0.95;
     painter.add(Shape::line_segment([from, to], stroke));
+}
+
+/// Table of contents: heading list — indented bars with leading dots.
+fn paint_toc(painter: &egui::Painter, c: Pos2, h: f32, color: egui::Color32) {
+    let stroke = Stroke::new(stroke_for(h), color);
+    let ys = [-0.55, 0.0, 0.55];
+    for (row, &dy) in ys.iter().enumerate() {
+        let y = c.y + h * dy;
+        // Leading dot, one indent step further in on every row.
+        let dot_x = c.x - h * 0.75 + row as f32 * h * 0.42;
+        painter.add(Shape::circle_filled(Pos2::new(dot_x, y), h * 0.14, color));
+        // Text bar after the dot; the last row is shorter (a deeper title).
+        let from = Pos2::new(dot_x + h * 0.38, y);
+        let to = Pos2::new(c.x + h * (if row == 2 { 0.35 } else { 0.8 }), y);
+        painter.add(Shape::line_segment([from, to], stroke));
+    }
 }
 
 /// A compact square button that shows only an icon.

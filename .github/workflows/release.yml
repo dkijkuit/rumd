@@ -73,6 +73,28 @@ jobs:
             rumd-*.tar.gz.sha256
             rumd-*.zip
 
+  flatpak:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install flatpak-builder and dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      - name: Build
+        run: |
+          flatpak-builder --user --install-deps-from=flathub --force-clean \
+            --state-dir .flatpak-builder-state --repo=fp-repo dist \
+            flatpak/io.github.dkijkuit.rumd.yml
+      - name: Bundle
+        run: |
+          flatpak build-bundle fp-repo "rumd-${GITHUB_REF_NAME}.flatpak" io.github.dkijkuit.rumd
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-flatpak
+          path: rumd-*.flatpak
+
   release:
     needs: build
     runs-on: ubuntu-latest

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=rumd
+GenericName=Markdown Editor
+Comment=View and edit Markdown with a live preview
+Exec=rumd
+Icon=io.github.dkijkuit.rumd
+Terminal=false
+Categories=Utility;TextEditor;
+MimeType=text/markdown;text/x-markdown;
+Keywords=markdown;editor;preview;viewer;
+StartupWMClass=rumd

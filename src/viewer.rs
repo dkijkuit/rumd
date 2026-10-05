@@ -34,6 +34,14 @@ pub struct RenderedView {
     /// The first, estimate-based scroll can be off by a lot when content
     /// density varies, so this may take a few frames.
     scroll_target: Option<(String, usize, usize)>,
+    /// ToC jump being steered: the target section is re-scrolled to the
+    /// top of the view every frame until the layout around it stops
+    /// changing (culled sections above still materialize after the first
+    /// scroll, shifting the target's position).
+    toc_target: Option<usize>,
+    /// Content-space top of the ToC target last frame, for the stability
+    /// check that ends the chase.
+    toc_target_top: Option<f32>,
 }
 
 /// What to highlight in the rendered view while the find bar is open.
@@ -54,6 +62,8 @@ impl RenderedView {
     /// changes, so placeholder heights never come from the old text).
     pub fn clear(&mut self) {
         self.section_heights.clear();
+        self.toc_target = None;
+        self.toc_target_top = None;
     }
 
     pub fn show(
@@ -62,6 +72,7 @@ impl RenderedView {
         markdown: &str,
         sections: &[Range<usize>],
         pending_jump: &mut Option<usize>,
+        toc_jump: &mut Option<usize>,
         search: Option<&SearchHighlight>,
     ) {
         // CentralPanel clips overflow, so long documents need a ScrollArea.
@@ -74,8 +85,16 @@ impl RenderedView {
         // corrected on the next frame. (Downward only: content above the
         // viewport would paint over the panels.)
         let paint_margin = egui::vec2(0.0, ui.available_height() * 3.0);
+        // The ScrollArea derives its persisted state id from the same salt,
+        // so the ToC jump can write the scroll offset directly (see below).
+        let scroll_id = ui.make_persistent_id(egui::IdSalt::new("rumd_rendered_scroll"));
+        // Measured during the pass when a ToC jump is being steered; the
+        // offset is computed and stored after the ScrollArea's own
+        // bookkeeping (end of pass) so it wins.
+        let mut toc_layout: Option<TocScroll> = None;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
+            .id_salt("rumd_rendered_scroll")
             .show(ui, |ui| {
                 // Allocate the highlight shape before any content: filling
                 // it in after the scan paints the rects behind all of the
@@ -102,6 +121,9 @@ impl RenderedView {
                     egui::vec2(width, full.height()),
                 );
                 let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                // Screen-space top of the content; the ToC jump's scroll
+                // offset is computed against this (scroll-invariant).
+                let content_origin = inner.next_widget_position().y;
                 // Rendered rect of every section (document order), used to
                 // attribute painted occurrence rects to sections.
                 let mut section_rects: Vec<egui::Rect> = Vec::new();
@@ -126,6 +148,7 @@ impl RenderedView {
                     // Search re-steers across frames, so estimates are fine
                     // for sections it has not reached yet.
                     let known_height = self.section_heights[i];
+                    let is_toc_target = *toc_jump == Some(i) || self.toc_target == Some(i);
                     // The clip rect stays screen-fixed while scrolling
                     // (unlike max_rect, which travels with the content).
                     let clip = inner.clip_rect();
@@ -135,6 +158,7 @@ impl RenderedView {
                     let top = inner.next_widget_position().y;
                     let needed = known_height.is_none()
                         || *pending_jump == Some(i)
+                        || is_toc_target
                         || search.is_some_and(|s| s.section == i)
                         || (top <= vis_bottom && known_height.is_none_or(|h| top + h >= vis_top));
                     if !needed {
@@ -182,6 +206,27 @@ impl RenderedView {
                                 Some((search.query.clone(), search.section, search.match_byte));
                         }
                     }
+                    // ToC navigation must land deterministically: the
+                    // heading is pinned to the top of the view and the
+                    // scroll offset is re-issued every frame until the
+                    // layout around it is stable. Culled sections above
+                    // materialize after the first scroll (their placeholders
+                    // start at height 0), which would otherwise leave the
+                    // landing position dependent on how much was measured
+                    // before the scroll.
+                    if is_toc_target {
+                        *toc_jump = None;
+                        toc_layout = Some(TocScroll {
+                            section: i,
+                            section_top: section_ui.min_rect().top(),
+                            content_origin,
+                            viewport_height: inner.clip_rect().height(),
+                            content_height: 0.0,
+                        });
+                    }
+                }
+                if let Some(toc) = &mut toc_layout {
+                    toc.content_height = inner.min_rect().height();
                 }
                 // Tell the ScrollArea how tall the content is: nothing else
                 // expands this ui, so the measured content would stay zero.
@@ -273,7 +318,41 @@ impl RenderedView {
                     }
                 }
             });
+        // Steer the ToC jump: write the scroll offset directly into the
+        // ScrollArea's persisted state (applied at the next pass), until
+        // the target's content-space position stops moving.
+        if let Some(toc) = toc_layout {
+            let content_y = toc.section_top - toc.content_origin;
+            let settled = self
+                .toc_target_top
+                .is_some_and(|prev| (prev - content_y).abs() < 0.5);
+            let available = (toc.content_height - toc.viewport_height).max(0.0);
+            let mut state =
+                egui::containers::scroll_area::State::load(ui.ctx(), scroll_id).unwrap_or_default();
+            state.offset.y = content_y.clamp(0.0, available);
+            state.store(ui.ctx(), scroll_id);
+            if settled {
+                self.toc_target = None;
+                self.toc_target_top = None;
+            } else {
+                self.toc_target = Some(toc.section);
+                self.toc_target_top = Some(content_y);
+            }
+        }
     }
+}
+
+/// Geometry a steering ToC jump needs from the pass, in screen space.
+struct TocScroll {
+    section: usize,
+    /// Screen-space top of the target section this frame.
+    section_top: f32,
+    /// Screen-space top of the content (the offset reference).
+    content_origin: f32,
+    /// Total laid-out content height, for clamping.
+    content_height: f32,
+    /// Visible height of the scroll area, for clamping.
+    viewport_height: f32,
 }
 
 /// Absolute byte offsets of every match of `query` within `section`, in
@@ -416,7 +495,7 @@ mod tests {
 
     fn show_whole(view: &mut RenderedView, ui: &mut egui::Ui, markdown: &str) {
         let sections = crate::search::split_sections(markdown);
-        view.show(ui, markdown, &sections, &mut None, None);
+        view.show(ui, markdown, &sections, &mut None, &mut None, None);
     }
 
     const GOLDEN: &str = "# Sample Heading\n\nSome paragraph text.\n\n- done item\n- [ ] todo item\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nThis is ~~struck text~~.\n\n```rust\nlet x = 1;\n```\n";
@@ -553,11 +632,65 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(600.0, 400.0))
             .build_ui(move |ui| {
-                view.show(ui, &md, &sections, &mut jump_for_ui.borrow_mut(), None);
+                view.show(
+                    ui,
+                    &md,
+                    &sections,
+                    &mut jump_for_ui.borrow_mut(),
+                    &mut None,
+                    None,
+                );
             });
         harness.run();
         harness.run();
         assert!(jump.borrow().is_none(), "pending jump must be consumed");
+    }
+
+    #[test]
+    fn toc_jump_lands_the_section_at_the_top() {
+        use egui_kittest::kittest::Queryable;
+        let mut md = String::new();
+        for i in 0..10 {
+            md.push_str(&format!("# Section {i}\n\n"));
+            for p in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] {
+                md.push_str(&format!("paragraph {i} {p}\n\n"));
+            }
+        }
+        // Content below the last target section so the scroll is not
+        // clamped by the end of the document.
+        md.push_str("# Appendix\n\n");
+        for i in 0..14 {
+            md.push_str(&format!("appendix note {i}\n\n"));
+        }
+        let sections = crate::search::split_sections(&md);
+        let mut view = RenderedView::new();
+        let toc_jump = Rc::new(RefCell::new(Some(9usize)));
+        let toc_for_ui = toc_jump.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 400.0))
+            .build_ui(move |ui| {
+                view.show(
+                    ui,
+                    &md,
+                    &sections,
+                    &mut None,
+                    &mut toc_for_ui.borrow_mut(),
+                    None,
+                );
+            });
+        for _ in 0..6 {
+            harness.run();
+        }
+        assert!(toc_jump.borrow().is_none(), "toc jump must be handed off");
+        let top = harness
+            .query_all_by_label("Section 9")
+            .map(|n| n.rect().top())
+            .next()
+            .expect("section 9 must be laid out");
+        assert!(
+            top < 120.0,
+            "the jumped-to heading must sit at the top of the view, got {top}"
+        );
     }
 
     #[test]
@@ -571,7 +704,14 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(600.0, 400.0))
             .build_ui(move |ui| {
-                view.show(ui, &md, &sections, &mut jump_for_ui.borrow_mut(), None);
+                view.show(
+                    ui,
+                    &md,
+                    &sections,
+                    &mut jump_for_ui.borrow_mut(),
+                    &mut None,
+                    None,
+                );
             });
         harness.run();
         harness.run();
@@ -600,7 +740,7 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(600.0, 400.0))
             .build_ui(move |ui| {
-                view.show(ui, &md, &secs, &mut None, None);
+                view.show(ui, &md, &secs, &mut None, &mut None, None);
             });
         harness.run();
         harness.run();
@@ -623,7 +763,7 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(1000.0, 600.0))
             .build_ui(move |ui| {
-                view.show(ui, &md, &sections, &mut None, None);
+                view.show(ui, &md, &sections, &mut None, &mut None, None);
             });
         harness.run();
         harness.run();
@@ -650,7 +790,7 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(900.0, 700.0))
             .build_ui(move |ui| {
-                view.show(ui, &md, &sections, &mut None, None);
+                view.show(ui, &md, &sections, &mut None, &mut None, None);
             });
         harness.run();
         harness.run();
@@ -701,6 +841,7 @@ mod tests {
                     &owned,
                     &sections,
                     &mut jump_for_ui.borrow_mut(),
+                    &mut None,
                     Some(&search_for_ui),
                 );
             });
@@ -732,7 +873,7 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(900.0, 700.0))
             .build_ui(move |ui| {
-                view.show(ui, &md, &sections, &mut None, None);
+                view.show(ui, &md, &sections, &mut None, &mut None, None);
             });
         harness.run();
         harness.run();
@@ -768,7 +909,7 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(900.0, 700.0))
             .build_ui(move |ui| {
-                view.show(ui, &md, &sections, &mut None, None);
+                view.show(ui, &md, &sections, &mut None, &mut None, None);
             });
         harness.run();
         harness.run();
@@ -820,7 +961,7 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(900.0, 700.0))
             .build_ui(move |ui| {
-                view.show(ui, &md, &sections, &mut None, None);
+                view.show(ui, &md, &sections, &mut None, &mut None, None);
             });
         harness.run();
         harness.run();
@@ -857,7 +998,7 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(900.0, 700.0))
             .build_ui(move |ui| {
-                view.show(ui, &md, &sections, &mut None, None);
+                view.show(ui, &md, &sections, &mut None, &mut None, None);
             });
         harness.run();
         harness.run();
@@ -984,7 +1125,14 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(600.0, 400.0))
             .build_ui(move |ui| {
-                view.show(ui, &owned, &sections, &mut None, Some(&search_for_ui));
+                view.show(
+                    ui,
+                    &owned,
+                    &sections,
+                    &mut None,
+                    &mut None,
+                    Some(&search_for_ui),
+                );
             });
         harness.run();
         harness.run();
@@ -1021,7 +1169,14 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(600.0, 400.0))
             .build_ui(move |ui| {
-                view.show(ui, &owned, &sections, &mut None, Some(&search_for_ui));
+                view.show(
+                    ui,
+                    &owned,
+                    &sections,
+                    &mut None,
+                    &mut None,
+                    Some(&search_for_ui),
+                );
             });
         harness.run();
         harness.run();
@@ -1051,7 +1206,14 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(600.0, 400.0))
             .build_ui(move |ui| {
-                view.show(ui, &owned, &sections, &mut None, Some(&search_for_ui));
+                view.show(
+                    ui,
+                    &owned,
+                    &sections,
+                    &mut None,
+                    &mut None,
+                    Some(&search_for_ui),
+                );
             });
         harness.run();
         harness.run();
@@ -1114,6 +1276,7 @@ mod tests {
                     &owned,
                     &sections,
                     &mut jump_for_ui.borrow_mut(),
+                    &mut None,
                     Some(&search_for_ui),
                 );
             });
@@ -1143,7 +1306,14 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(600.0, 400.0))
             .build_ui(move |ui| {
-                view.show(ui, &owned, &sections, &mut None, Some(&search_for_ui));
+                view.show(
+                    ui,
+                    &owned,
+                    &sections,
+                    &mut None,
+                    &mut None,
+                    Some(&search_for_ui),
+                );
             });
         harness.run();
         harness.run();
@@ -1171,7 +1341,14 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(600.0, 400.0))
             .build_ui(move |ui| {
-                view.show(ui, &owned, &sections, &mut None, Some(&search_for_ui));
+                view.show(
+                    ui,
+                    &owned,
+                    &sections,
+                    &mut None,
+                    &mut None,
+                    Some(&search_for_ui),
+                );
             });
         harness.run();
         harness.run();
@@ -1220,6 +1397,7 @@ mod tests {
                     &owned,
                     &sections,
                     &mut jump_for_ui.borrow_mut(),
+                    &mut None,
                     Some(&search_for_ui),
                 );
             });
@@ -1265,7 +1443,14 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(600.0, 400.0))
             .build_ui(move |ui| {
-                view.show(ui, &owned, &sections, &mut None, Some(&search_for_ui));
+                view.show(
+                    ui,
+                    &owned,
+                    &sections,
+                    &mut None,
+                    &mut None,
+                    Some(&search_for_ui),
+                );
             });
         harness.run();
         harness.run();
@@ -1288,7 +1473,7 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(900.0, 700.0))
             .build_ui(move |ui| {
-                view.show(ui, &md, &sections, &mut None, None);
+                view.show(ui, &md, &sections, &mut None, &mut None, None);
             });
         harness.run();
         harness.run();
@@ -1322,7 +1507,7 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(600.0, 400.0))
             .build_ui(move |ui| {
-                view.show(ui, &md, &sections, &mut None, None);
+                view.show(ui, &md, &sections, &mut None, &mut None, None);
             });
         harness.run();
         harness.run();

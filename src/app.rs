@@ -1,11 +1,12 @@
 use eframe::egui;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::document::{Document, FileWatcher, RELOAD_DEBOUNCE, debounce_ready};
 use crate::icons;
 use crate::search;
 use crate::source;
+use crate::toc;
 use crate::viewer::RenderedView;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +24,7 @@ pub enum Action {
     Refresh,
     Search,
     Save,
+    ToggleToc,
 }
 
 /// Map a modifier+key combination to a global action.
@@ -34,6 +36,7 @@ pub fn shortcut_action(mods: egui::Modifiers, key: egui::Key) -> Option<Action> 
         (true, egui::Key::D) => Some(Action::ToggleTheme),
         (true, egui::Key::F) => Some(Action::Search),
         (true, egui::Key::S) => Some(Action::Save),
+        (true, egui::Key::T) => Some(Action::ToggleToc),
         (false, egui::Key::F5) => Some(Action::Refresh),
         _ => None,
     }
@@ -75,6 +78,7 @@ const SEARCH_FIELD: &str = "rumd_search_field";
 const KEY_THEME: &str = "theme";
 const KEY_ZOOM: &str = "zoom";
 const KEY_MODE: &str = "mode";
+const KEY_TOC: &str = "toc";
 const ZOOM_MIN: f32 = 0.2;
 const ZOOM_MAX: f32 = 5.0;
 
@@ -136,6 +140,14 @@ pub fn prefs_path() -> Option<PathBuf> {
     }
 }
 
+pub fn encode_toc(open: bool) -> &'static str {
+    if open { "open" } else { "closed" }
+}
+
+pub fn decode_toc(raw: Option<&str>) -> bool {
+    raw == Some("open")
+}
+
 pub struct App {
     pub doc: Option<Document>,
     /// Text as last loaded from / saved to disk; `doc.raw` drifts from it
@@ -164,6 +176,16 @@ pub struct App {
     source_highlight: Option<std::ops::Range<usize>>,
     pub sections: Vec<std::ops::Range<usize>>,
     pending_render_jump: Option<usize>,
+    /// Cached table of contents for the current document text; recomputed
+    /// wherever `sections` is.
+    toc_entries: Vec<toc::TocEntry>,
+    /// Which ToC groups (by outline path) are collapsed.
+    toc_collapsed: std::collections::HashSet<toc::EntryPath>,
+    /// ToC sidebar visibility; toggled with Ctrl/Cmd+T or the toolbar icon.
+    toc_open: bool,
+    /// Byte offset of a ToC entry awaiting its jump (rendered view scrolls
+    /// to its section; the source caret parks at the heading line).
+    pending_toc_jump: Option<usize>,
     /// Where prefs are persisted; `None` (tests) disables writing.
     prefs_file: Option<PathBuf>,
     /// Open-file dialog hook (overridden by tests to avoid blocking).
@@ -171,6 +193,7 @@ pub struct App {
     saved_theme: Option<egui::ThemePreference>,
     saved_mode: Option<ViewMode>,
     saved_zoom: f32,
+    saved_toc: bool,
     rendered: RenderedView,
     open_requested: bool,
     applied_theme: Option<egui::ThemePreference>,
@@ -201,11 +224,16 @@ impl App {
             source_highlight: None,
             sections: Vec::new(),
             pending_render_jump: None,
+            toc_entries: Vec::new(),
+            toc_collapsed: std::collections::HashSet::new(),
+            toc_open: false,
+            pending_toc_jump: None,
             prefs_file: None,
             open_dialog: Box::new(rfd_open_dialog),
             saved_theme: None,
             saved_mode: None,
             saved_zoom: 1.0,
+            saved_toc: false,
             rendered: RenderedView::new(),
             open_requested: false,
             applied_theme: None,
@@ -254,6 +282,7 @@ impl App {
                     }
                 }
                 self.sections = search::split_sections(&doc.raw);
+                self.toc_entries = toc::headings(&doc.raw);
                 self.saved_raw = Some(doc.raw.clone());
                 self.conflict = false;
                 // Section heights come from the previous document; reset so
@@ -303,7 +332,13 @@ impl App {
                     self.open_path(&path);
                 }
             } else {
-                ctx.request_repaint_after(RELOAD_DEBOUNCE - t.elapsed());
+                // egui subtracts the predicted frame time from the delay
+                // to avoid oversleeping; pre-compensate so the effective
+                // delay is the exact remainder (and never collapses to an
+                // immediate repaint when predicted_dt > remaining, which
+                // would spin repaint loops under kittest).
+                let predicted = Duration::from_secs_f32(ctx.input(|i| i.predicted_dt));
+                ctx.request_repaint_after(RELOAD_DEBOUNCE - t.elapsed() + predicted);
             }
         }
     }
@@ -327,6 +362,7 @@ impl App {
     fn on_document_edited(&mut self, cursor_byte: Option<usize>) {
         if let Some(doc) = &self.doc {
             self.sections = search::split_sections(&doc.raw);
+            self.toc_entries = toc::headings(&doc.raw);
         }
         self.recompute_matches();
         if let Some(byte) = cursor_byte {
@@ -382,13 +418,15 @@ impl App {
     /// Serialize the current preferences as `key=value` lines.
     pub fn prefs_to_string(&self) -> String {
         format!(
-            "{}={}\n{}={}\n{}={}\n",
+            "{}={}\n{}={}\n{}={}\n{}={}\n",
             KEY_THEME,
             encode_theme(self.theme_pref),
             KEY_ZOOM,
             self.zoom,
             KEY_MODE,
-            encode_mode(self.mode)
+            encode_mode(self.mode),
+            KEY_TOC,
+            encode_toc(self.toc_open)
         )
     }
 
@@ -402,6 +440,7 @@ impl App {
                 KEY_THEME => self.theme_pref = decode_theme(value.trim()),
                 KEY_ZOOM => self.zoom = decode_zoom(Some(value.trim())),
                 KEY_MODE => self.mode = decode_mode(value.trim()),
+                KEY_TOC => self.toc_open = decode_toc(Some(value.trim())),
                 _ => {}
             }
         }
@@ -416,6 +455,7 @@ impl App {
             self.saved_theme = Some(self.theme_pref);
             self.saved_mode = Some(self.mode);
             self.saved_zoom = self.zoom;
+            self.saved_toc = self.toc_open;
         }
     }
 
@@ -432,7 +472,8 @@ impl App {
     fn persist_prefs_if_changed(&mut self) {
         let changed = self.saved_theme != Some(self.theme_pref)
             || self.saved_mode != Some(self.mode)
-            || (self.saved_zoom - self.zoom).abs() > f32::EPSILON;
+            || (self.saved_zoom - self.zoom).abs() > f32::EPSILON
+            || self.saved_toc != self.toc_open;
         if !changed {
             return;
         }
@@ -444,6 +485,7 @@ impl App {
                 self.saved_theme = Some(self.theme_pref);
                 self.saved_mode = Some(self.mode);
                 self.saved_zoom = self.zoom;
+                self.saved_toc = self.toc_open;
             }
         }
     }
@@ -454,6 +496,43 @@ impl App {
         self.poll_watcher(&ctx);
         self.apply_theme(&ctx);
         Self::apply_typography(&ctx);
+        // egui smooths ctrl/cmd+wheel over several frames, which would
+        // rebuild the glyph atlas per intermediate zoom level; instead a
+        // wheel notch steps once, like Ctrl+= (and browsers). Only pinch
+        // gestures stay continuous.
+        let (notches, zoom_event) = ctx.input(|i| {
+            let notches: f32 = i
+                .raw
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Line,
+                        delta,
+                        modifiers,
+                        ..
+                    } if modifiers.matches_any(egui::Modifiers::COMMAND) => Some(delta.y.signum()),
+                    _ => None,
+                })
+                .sum();
+            let zoom_event = i.multi_touch().is_some()
+                || i.raw
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::Zoom(_)));
+            (notches, zoom_event)
+        });
+        if notches != 0.0 {
+            let stepped = (ctx.zoom_factor() * 10.0).round() / 10.0 + notches / 10.0;
+            let zoomed = clamp_zoom(stepped);
+            ctx.memory_mut(|mem| mem.options.zoom_factor = zoomed);
+        } else if zoom_event {
+            let zoom_delta = ctx.input(|i| i.zoom_delta());
+            if zoom_delta != 1.0 {
+                let zoomed = clamp_zoom(ctx.zoom_factor() * zoom_delta);
+                ctx.memory_mut(|mem| mem.options.zoom_factor = zoomed);
+            }
+        }
         self.zoom = ctx.zoom_factor();
         self.persist_prefs_if_changed();
         self.show_error_banner(ui);
@@ -461,6 +540,7 @@ impl App {
         self.show_refresh_confirm_banner(ui);
         self.show_top_bar(ui);
         self.show_search_bar(ui);
+        self.show_toc_panel(ui);
         self.update_window_title(&ctx);
 
         egui::CentralPanel::default().show(ui, |ui| {
@@ -470,17 +550,37 @@ impl App {
             }
             let search = self.search_open_highlight();
             let theme = source::code_theme(self.theme_pref, &ctx);
-            let highlight = self.source_highlight.clone();
             let source_query = self.search.open.then(|| self.search.query.clone());
             let sections = self.sections.clone();
             let doc = self.doc.as_mut().unwrap();
             let mut render_jump = self.pending_render_jump;
+            // A pending ToC jump goes to the rendered section containing
+            // the heading (the view then pins it to the top) — except in
+            // Source view, where it parks the caret on the heading line by
+            // reusing the search-jump plumbing with a zero-width highlight
+            // (and retires any search caret park).
+            let toc_byte = self.pending_toc_jump.take();
+            let highlight = match toc_byte {
+                Some(byte) if self.mode == ViewMode::Source => {
+                    self.source_highlight = None;
+                    Some(byte..byte)
+                }
+                _ => self.source_highlight.clone(),
+            };
+            let mut toc_jump =
+                toc_byte.and_then(|byte| search::section_containing(&sections, byte));
             let mut edited = false;
             let mut edit_cursor = None;
             match self.mode {
                 ViewMode::Rendered => {
-                    self.rendered
-                        .show(ui, &doc.raw, &sections, &mut render_jump, search.as_ref());
+                    self.rendered.show(
+                        ui,
+                        &doc.raw,
+                        &sections,
+                        &mut render_jump,
+                        &mut toc_jump,
+                        search.as_ref(),
+                    );
                 }
                 ViewMode::Source => {
                     let (changed, cursor) = source::show(
@@ -504,6 +604,7 @@ impl App {
                             raw,
                             &sections,
                             &mut render_jump,
+                            &mut toc_jump,
                             search.as_ref(),
                         );
                         let (changed, cursor) = source::show(
@@ -547,6 +648,11 @@ impl App {
                 }
                 Some(Action::Refresh) => self.refresh(),
                 Some(Action::Save) => self.save_document(),
+                Some(Action::ToggleToc) => {
+                    if self.doc.is_some() {
+                        self.toc_open = !self.toc_open;
+                    }
+                }
                 Some(Action::Search) => {
                     self.search.open = true;
                     self.recompute_matches();
@@ -765,6 +871,17 @@ impl App {
                     {
                         action = Some(Action::Save);
                     }
+                    if icons::icon_button(
+                        &mut child,
+                        Icon::Toc,
+                        "Table of contents",
+                        doc_info.is_some(),
+                    )
+                    .on_hover_text("Toggle the table of contents (Ctrl+T)")
+                    .clicked()
+                    {
+                        action = Some(Action::ToggleToc);
+                    }
                     child.separator();
                     // Clicking a segment selects that mode directly
                     // (Ctrl+E cycles through the same three modes).
@@ -857,7 +974,10 @@ impl App {
                 self.recompute_matches();
                 ctx.memory_mut(|m| m.request_focus(egui::Id::new(SEARCH_FIELD)));
             }
-            None => {}
+            Some(Action::ToggleToc) if self.doc.is_some() => {
+                self.toc_open = !self.toc_open;
+            }
+            Some(Action::ToggleToc) | None => {}
         }
     }
 
@@ -1042,6 +1162,30 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.last_title = Some(title);
         }
+    }
+
+    /// The collapsible table-of-contents sidebar (only while open and a
+    /// document is loaded). Entries indent by heading level.
+    fn show_toc_panel(&mut self, ui: &mut egui::Ui) {
+        if !self.toc_open || self.doc.is_none() {
+            return;
+        }
+        egui::Panel::left("rumd_toc")
+            .resizable(true)
+            .default_size(230.0)
+            .min_size(160.0)
+            .max_size(400.0)
+            .show(ui, |ui| {
+                let intents = toc::show_panel(ui, &self.toc_entries, &self.toc_collapsed);
+                if let Some(path) = intents.toggled
+                    && !self.toc_collapsed.remove(&path)
+                {
+                    self.toc_collapsed.insert(path);
+                }
+                if intents.jump_to.is_some() {
+                    self.pending_toc_jump = intents.jump_to;
+                }
+            });
     }
 
     /// The window title: file name, with an unsaved-changes marker while
@@ -1374,6 +1518,8 @@ mod tests {
         assert_eq!(shortcut_action(ctrl, egui::Key::X), None);
         assert_eq!(shortcut_action(ctrl, egui::Key::F), Some(Action::Search));
         assert_eq!(shortcut_action(cmd, egui::Key::F), Some(Action::Search));
+        assert_eq!(shortcut_action(ctrl, egui::Key::T), Some(Action::ToggleToc));
+        assert_eq!(shortcut_action(cmd, egui::Key::T), Some(Action::ToggleToc));
     }
 
     #[test]
@@ -2249,22 +2395,30 @@ mod tests {
         app.mode = ViewMode::Source;
         app.theme_pref = egui::ThemePreference::Dark;
         app.zoom = 1.3;
+        app.toc_open = true;
         let s = app.prefs_to_string();
         assert!(s.contains("mode=source"));
         assert!(s.contains("theme=dark"));
         assert!(s.contains("zoom=1.3"));
+        assert!(s.contains("toc=open"));
 
         let mut other = App::new(None);
         other.apply_prefs_string(&s);
         assert_eq!(other.mode, ViewMode::Source);
         assert_eq!(other.theme_pref, egui::ThemePreference::Dark);
         assert!((other.zoom - 1.3).abs() < 1e-6);
+        assert!(other.toc_open);
 
         // Garbage and missing values fall back without panicking.
-        other.apply_prefs_string("theme=bogus\nzoom=zzz\nmode=huh\n");
+        other.apply_prefs_string("theme=bogus\nzoom=zzz\nmode=huh\ntoc=huh\n");
         assert_eq!(other.theme_pref, egui::ThemePreference::System);
         assert_eq!(other.mode, ViewMode::Rendered);
         assert!((other.zoom - 1.0).abs() < 1e-6);
+        assert!(!other.toc_open, "a bogus toc value closes the ToC");
+
+        // A missing toc line (older prefs file) leaves the default closed.
+        other.apply_prefs_string("theme=dark\n");
+        assert!(!other.toc_open);
     }
 
     #[test]
@@ -2292,6 +2446,130 @@ mod tests {
         assert!(
             (app.borrow().zoom - 1.0).abs() < 1e-6,
             "ctrl+0 must reset zoom, zoom={}",
+            app.borrow().zoom
+        );
+    }
+
+    #[test]
+    fn zoom_delta_events_update_mirrored_zoom() {
+        let app = Rc::new(RefCell::new(App::new(None)));
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run();
+        // egui routes ctrl/cmd+wheel and trackpad pinch into a per-frame
+        // zoom delta; `Event::Zoom` is the headless way to inject it.
+        harness.event(egui::Event::Zoom(1.25));
+        harness.run();
+        assert!(
+            (app.borrow().zoom - 1.25).abs() < 1e-4,
+            "a zoom event must scale the ui, zoom={}",
+            app.borrow().zoom
+        );
+        assert!(
+            app.borrow().prefs_to_string().contains("zoom=1.25"),
+            "wheel zoom must persist like shortcut zoom, prefs={}",
+            app.borrow().prefs_to_string()
+        );
+        // Overshooting the range clamps to the configured limits.
+        for _ in 0..5 {
+            harness.event(egui::Event::Zoom(2.0));
+            harness.run();
+        }
+        assert!(
+            (app.borrow().zoom - ZOOM_MAX).abs() < 1e-4,
+            "zoom must clamp at the maximum, zoom={}",
+            app.borrow().zoom
+        );
+        for _ in 0..5 {
+            harness.event(egui::Event::Zoom(0.1));
+            harness.run();
+        }
+        assert!(
+            (app.borrow().zoom - ZOOM_MIN).abs() < 1e-4,
+            "zoom must clamp at the minimum, zoom={}",
+            app.borrow().zoom
+        );
+        // The keyboard reset still recovers from a wheel-zoomed state.
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Num0);
+        harness.run();
+        assert!(
+            (app.borrow().zoom - 1.0).abs() < 1e-6,
+            "ctrl+0 must reset wheel zoom too, zoom={}",
+            app.borrow().zoom
+        );
+    }
+
+    fn notch(lines: f32) -> egui::Event {
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, lines),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::COMMAND,
+        }
+    }
+
+    #[test]
+    fn wheel_notch_zooms_in_discrete_steps() {
+        let app = Rc::new(RefCell::new(App::new(None)));
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run();
+        // One notch = one discrete step, like Ctrl+= (and browsers).
+        harness.event(notch(1.0));
+        harness.run_steps(1);
+        assert!(
+            (app.borrow().zoom - 1.1).abs() < 1e-4,
+            "one notch must zoom one step, zoom={}",
+            app.borrow().zoom
+        );
+        harness.event(notch(1.0));
+        harness.run_steps(1);
+        assert!(
+            (app.borrow().zoom - 1.2).abs() < 1e-4,
+            "second notch must zoom a further step, zoom={}",
+            app.borrow().zoom
+        );
+        // The notch must not leak into egui's smoothed wheel zoom: the
+        // value must stay put on the following frames.
+        harness.run_steps(5);
+        assert!(
+            (app.borrow().zoom - 1.2).abs() < 1e-4,
+            "zoom must not drift after the notch, zoom={}",
+            app.borrow().zoom
+        );
+        // Scrolling down zooms out.
+        harness.event(notch(-1.0));
+        harness.run_steps(1);
+        assert!(
+            (app.borrow().zoom - 1.1).abs() < 1e-4,
+            "reverse notch must zoom out, zoom={}",
+            app.borrow().zoom
+        );
+        // A burst of notches between frames applies all of them at once…
+        for _ in 0..20 {
+            harness.event(notch(-1.0));
+        }
+        harness.run_steps(1);
+        // …and clamping keeps the value inside the configured range.
+        assert!(
+            (app.borrow().zoom - ZOOM_MIN).abs() < 1e-4,
+            "zoom must clamp at the minimum, zoom={}",
+            app.borrow().zoom
+        );
+        // The keyboard reset still recovers from a wheel-zoomed state.
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Num0);
+        harness.run();
+        assert!(
+            (app.borrow().zoom - 1.0).abs() < 1e-6,
+            "ctrl+0 must reset wheel zoom too, zoom={}",
             app.borrow().zoom
         );
     }
@@ -2588,6 +2866,44 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
     }
 
+    #[test]
+    fn watcher_debounce_settles_for_harness_run() {
+        // Regression: egui subtracts the predicted frame time from repaint
+        // delays, and kittest's default step_dt (250ms) exceeds the whole
+        // debounce window — the request collapsed to an immediate repaint
+        // and `Harness::run` looped into max_steps. Drain a watcher event,
+        // then `run()` must settle instead of spinning.
+        let path = temp_path("debouncesettle.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+
+        std::fs::write(&path, "# Debounce Settle").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&path);
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+
+        std::fs::write(&path, "# Debounce Settle 2").unwrap();
+        let mut drained = false;
+        for _ in 0..100 {
+            harness.run_steps(1);
+            if app.borrow().changed_at.is_some() {
+                drained = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(drained, "watcher event never reached the app");
+        harness.run();
+        harness.run();
+        harness.run();
+        std::fs::remove_file(&path).unwrap();
+    }
+
     // --- perf probe: Rendered <-> Split switch frame cost -----------------
     // Temporary measurement harness. Run with:
     //   cargo test --release perf_probe_mode_switch -- --ignored --nocapture
@@ -2708,5 +3024,374 @@ mod tests {
             median(back)
         );
         std::fs::remove_file(&doc).unwrap();
+    }
+
+    // Perf probe: one ctrl+wheel notch must cost one rebuild (one zoom
+    // frame), not a smoothed crawl of intermediate zoom levels.
+    #[test]
+    #[ignore = "perf probe: cargo test --release perf_probe_zoom_notch -- --ignored --nocapture"]
+    fn perf_probe_zoom_notch_timing() {
+        let doc = temp_path("zoom-perf.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+        std::fs::write(&doc, large_markdown(400)).unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(5);
+
+        // One real ctrl+wheel notch: count frames with a zoom change.
+        harness.event(notch(1.0));
+        let mut zoom_frames = 0;
+        let mut prev = app.borrow().zoom;
+        let t_notch = std::time::Instant::now();
+        for _ in 0..60 {
+            harness.run_steps(1);
+            let z = app.borrow().zoom;
+            if (z - prev).abs() > f32::EPSILON {
+                zoom_frames += 1;
+                prev = z;
+            }
+        }
+        let t_notch = t_notch.elapsed();
+
+        // Steady-state baseline: same frame count, no events.
+        let t_base = std::time::Instant::now();
+        harness.run_steps(60);
+        let t_base = t_base.elapsed();
+
+        println!("zoom_frames={zoom_frames} notch60={t_notch:?} baseline60={t_base:?}");
+        assert_eq!(zoom_frames, 1, "a notch must zoom in a single frame");
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    fn toc_app(
+        name: &str,
+    ) -> (
+        std::path::PathBuf,
+        Rc<RefCell<App>>,
+        Harness<'_>,
+        std::sync::MutexGuard<'static, ()>,
+    ) {
+        let doc = temp_path(name);
+        let cwd = CWD_LOCK.lock().unwrap();
+        std::fs::write(
+            &doc,
+            "# Top\n\ntop text\n\n## Sub\n\nsub text\n\n### Deep\n\ndeep text\n",
+        )
+        .unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        let app_for_ui = app.clone();
+        let harness = Harness::builder()
+            .with_size(egui::vec2(1000.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        (doc, app, harness, cwd)
+    }
+
+    /// Nodes labeled `label`: 1 from the rendered heading, +1 per ToC
+    /// entry (same text) while the sidebar is open.
+    fn toc_entry_count(harness: &Harness, label: &str) -> usize {
+        harness.query_all_by_label(label).count() - 1
+    }
+
+    #[test]
+    fn ctrl_t_toggles_the_toc_sidebar() {
+        let (doc, _app, mut harness, _cwd) = toc_app("tockey.md");
+        harness.run_steps(2);
+        assert_eq!(
+            toc_entry_count(&harness, "Sub"),
+            0,
+            "the ToC must start closed"
+        );
+        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::T);
+        harness.run_steps(2);
+        assert_eq!(toc_entry_count(&harness, "Top"), 1);
+        assert_eq!(toc_entry_count(&harness, "Sub"), 1);
+        assert_eq!(
+            toc_entry_count(&harness, "Deep"),
+            1,
+            "every heading is listed"
+        );
+        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::T);
+        harness.run_steps(2);
+        assert_eq!(
+            toc_entry_count(&harness, "Sub"),
+            0,
+            "Ctrl+T again must close the ToC"
+        );
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn toc_toolbar_button_toggles_the_sidebar() {
+        let (doc, _app, mut harness, _cwd) = toc_app("tocbtn.md");
+        harness.run_steps(2);
+        assert_eq!(toc_entry_count(&harness, "Sub"), 0, "start closed");
+        harness.get_by_label("Table of contents").click();
+        harness.run_steps(2);
+        assert_eq!(toc_entry_count(&harness, "Top"), 1, "button opens the ToC");
+        harness.get_by_label("Table of contents").click();
+        harness.run_steps(2);
+        assert_eq!(toc_entry_count(&harness, "Top"), 0, "button closes the ToC");
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn toc_shortcut_is_a_noop_without_a_document() {
+        let app = Rc::new(RefCell::new(App::new(None)));
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::T);
+        harness.run_steps(2);
+        assert!(
+            !app.borrow().toc_open,
+            "no document: the shortcut must not open the ToC"
+        );
+    }
+
+    #[test]
+    fn toc_chevron_collapses_a_group() {
+        let (doc, _app, mut harness, _cwd) = toc_app("tocchev.md");
+        harness.run_steps(2);
+        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::T);
+        harness.run_steps(2);
+        assert_eq!(toc_entry_count(&harness, "Sub"), 1);
+        assert_eq!(toc_entry_count(&harness, "Deep"), 1);
+        harness.get_by_label("Collapse Top").click();
+        harness.run_steps(2);
+        assert_eq!(
+            toc_entry_count(&harness, "Sub"),
+            0,
+            "collapsing Top must hide Sub"
+        );
+        assert_eq!(
+            toc_entry_count(&harness, "Deep"),
+            0,
+            "collapsing Top must hide nested Deep"
+        );
+        assert_eq!(
+            toc_entry_count(&harness, "Top"),
+            1,
+            "Top itself stays visible"
+        );
+        harness.get_by_label("Expand Top").click();
+        harness.run_steps(2);
+        assert_eq!(
+            toc_entry_count(&harness, "Sub"),
+            1,
+            "expanding restores Sub"
+        );
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    /// The ToC sidebar sits on the left, so among all widgets sharing an
+    /// entry's label (entry button + rendered heading) the leftmost is the
+    /// ToC entry.
+    fn toc_entry<'h>(harness: &'h Harness, title: &'h str) -> egui_kittest::Node<'h> {
+        harness
+            .query_all_by_label(title)
+            .min_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+            .unwrap_or_else(|| panic!("no ToC entry labeled {title}"))
+    }
+
+    #[test]
+    fn toc_click_jumps_the_rendered_view() {
+        let doc = temp_path("tocjump.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+        // Ten ToC rows fit the sidebar without scrolling, while eight
+        // paragraphs per section push the last section past the viewer's
+        // 3x-viewport paint margin (where culling kicks in).
+        let mut md = String::new();
+        for i in 0..10 {
+            md.push_str(&format!("# Section {i}\n\n"));
+            for p in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] {
+                md.push_str(&format!("paragraph {i} {p}\n\n"));
+            }
+        }
+        std::fs::write(&doc, &md).unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        app.borrow_mut().toc_open = true;
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1000.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        assert!(
+            harness.query_by_label("paragraph 9 h").is_none(),
+            "precondition: the last section must start out of view"
+        );
+        toc_entry(&harness, "Section 9").click();
+        let mut jumped = false;
+        for _ in 0..60 {
+            harness.run();
+            if harness.query_by_label("paragraph 9 h").is_some() {
+                jumped = true;
+                break;
+            }
+        }
+        assert!(
+            jumped,
+            "clicking a ToC entry must scroll the rendered view to it"
+        );
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    /// Screen-space top of the *rendered* heading (rightmost node with
+    /// that label; a ToC entry button would be leftmost).
+    fn rendered_heading_top(harness: &Harness, title: &str) -> f32 {
+        harness
+            .query_all_by_label(title)
+            .max_by(|a, b| a.rect().right().total_cmp(&b.rect().right()))
+            .unwrap_or_else(|| panic!("no rendered heading labeled {title}"))
+            .rect()
+            .top()
+    }
+
+    /// Run frames until the heading stops moving (scroll animation and
+    /// layout materialization settle).
+    fn settle_heading(harness: &mut Harness, title: &str) -> f32 {
+        let mut prev = f32::NAN;
+        for _ in 0..90 {
+            harness.run();
+            let top = rendered_heading_top(harness, title);
+            if (top - prev).abs() < 0.5 {
+                return top;
+            }
+            prev = top;
+        }
+        panic!("heading {title} never settled (top={prev})");
+    }
+
+    #[test]
+    fn toc_jumps_land_the_heading_at_a_deterministic_position() {
+        let doc = temp_path("tocland.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+        let mut md = String::new();
+        for i in 0..10 {
+            md.push_str(&format!("# Section {i}\n\n"));
+            for p in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] {
+                md.push_str(&format!("paragraph {i} {p}\n\n"));
+            }
+        }
+        // Content below the last target section so the scroll is not
+        // clamped by the end of the document.
+        md.push_str("# Appendix\n\n");
+        for i in 0..14 {
+            md.push_str(&format!("appendix note {i}\n\n"));
+        }
+        std::fs::write(&doc, &md).unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        app.borrow_mut().toc_open = true;
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1000.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+
+        // Jump down to Section 9 from a fresh (top) scroll.
+        toc_entry(&harness, "Section 9").click();
+        let top_far = settle_heading(&mut harness, "Section 9");
+
+        // Jump up to Section 2, then back down to Section 9: the landing
+        // must not depend on the direction of approach.
+        toc_entry(&harness, "Section 2").click();
+        let _ = settle_heading(&mut harness, "Section 2");
+        toc_entry(&harness, "Section 9").click();
+        let top_again = settle_heading(&mut harness, "Section 9");
+
+        assert!(
+            (top_far - top_again).abs() < 1.0,
+            "Section 9 must land at the same position from any starting point: \
+             {top_far} vs {top_again}"
+        );
+        assert!(
+            top_far < 120.0,
+            "the jumped-to heading must sit at the top of the view, got {top_far}"
+        );
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn toc_click_moves_the_source_caret() {
+        let doc = temp_path("toccaret.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+        std::fs::write(&doc, "# Top\n\nbody\n\n## Target\n\ntail\n").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        app.borrow_mut().mode = ViewMode::Source;
+        app.borrow_mut().toc_open = true;
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1000.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        toc_entry(&harness, "Target").click();
+        harness.run();
+        // The jump parks the caret on the heading's line start and focuses
+        // the editor; typed text must land exactly there.
+        harness.get_by_label("Source").type_text("X");
+        harness.run();
+        let raw = app.borrow().doc.as_ref().unwrap().raw.clone();
+        assert_eq!(
+            raw, "# Top\n\nbody\n\nX## Target\n\ntail\n",
+            "the caret must sit at the Target heading line"
+        );
+        std::fs::remove_file(&doc).unwrap();
+    }
+
+    #[test]
+    fn toc_toggle_persists_to_the_prefs_file() {
+        let doc = temp_path("tocprefs.md");
+        let prefs = temp_path("tocprefs.txt");
+        let _cwd = CWD_LOCK.lock().unwrap();
+        std::fs::write(&doc, "# Top\n").unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().set_prefs_file(Some(prefs.clone()));
+        app.borrow_mut().open_path(&doc);
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1000.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run();
+        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::T);
+        harness.run();
+        assert!(
+            std::fs::read_to_string(&prefs)
+                .unwrap()
+                .contains("toc=open"),
+            "opening the ToC must persist to the prefs file"
+        );
+        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::T);
+        harness.run();
+        assert!(
+            std::fs::read_to_string(&prefs)
+                .unwrap()
+                .contains("toc=closed"),
+            "closing the ToC must persist to the prefs file"
+        );
+        std::fs::remove_file(&doc).unwrap();
+        std::fs::remove_file(&prefs).unwrap();
     }
 }

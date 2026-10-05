@@ -3,6 +3,7 @@ mod document;
 mod icons;
 mod search;
 mod source;
+mod toc;
 mod viewer;
 
 use std::path::PathBuf;
