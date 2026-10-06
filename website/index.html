@@ -21,6 +21,7 @@
     <a href="#screenshots">Screenshots</a>
     <a href="#shortcuts">Shortcuts</a>
     <a href="#install">Install</a>
+    <a href="#source">From source</a>
     <a class="btn btn-small" href="https://github.com/dkijkuit/rumd">GitHub</a>
   </nav>
 </header>
@@ -94,7 +95,7 @@
       <h3>Rendered markdown</h3>
       <p>GFM tables, task lists, strikethrough, syntax-highlighted code
       blocks, clickable links, and local images resolved relative to the
-      document.</p>
+      document — all in a centered reading column with tuned typography.</p>
     </article>
     <article class="feature">
       <div class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg></div>
@@ -103,6 +104,13 @@
       editable and the rendered pane follows as you type — save with
       <kbd>Ctrl/Cmd+S</kbd>. Unsaved changes show a <code>•</code> in the
       window title.</p>
+    </article>
+    <article class="feature">
+      <div class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="M12 8h6M12 12h6M12 16h4"/></svg></div>
+      <h3>Table of contents</h3>
+      <p>A collapsible sidebar lists every heading. Expand and collapse
+      groups, click an entry to jump straight to it — and it stays open or
+      closed the way you left it.</p>
     </article>
     <article class="feature">
       <div class="feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.2-4.2"/></svg></div>
@@ -196,11 +204,13 @@
       <tr><td><kbd>Ctrl/Cmd+O</kbd></td><td>Open file</td></tr>
       <tr><td><kbd>Ctrl/Cmd+S</kbd></td><td>Save edits</td></tr>
       <tr><td><kbd>Ctrl/Cmd+E</kbd></td><td>Cycle rendered/split/source</td></tr>
+      <tr><td><kbd>Ctrl/Cmd+T</kbd></td><td>Toggle the table of contents</td></tr>
       <tr><td><kbd>Ctrl/Cmd+D</kbd></td><td>Toggle dark/light theme</td></tr>
       <tr><td><kbd>Ctrl/Cmd+F</kbd></td><td>Search</td></tr>
       <tr><td><kbd>Enter</kbd> / <kbd>Shift+Enter</kbd></td><td>Next / previous match</td></tr>
       <tr><td><kbd>Esc</kbd></td><td>Close search</td></tr>
       <tr><td><kbd>Ctrl/Cmd+=</kbd> / <kbd>Ctrl/Cmd+-</kbd> / <kbd>Ctrl/Cmd+0</kbd></td><td>Zoom in / out / reset</td></tr>
+      <tr><td><kbd>Ctrl/Cmd+scroll</kbd> / pinch</td><td>Zoom in / out</td></tr>
       <tr><td><kbd>F5</kbd></td><td>Reload from disk (asks first if there are unsaved edits)</td></tr>
     </tbody>
   </table>
@@ -212,9 +222,8 @@
   <p class="install-lead">Prebuilt binaries are attached to every release —
   the latest is <strong>v0.1.1</strong>. Unpack the archive for your
   platform and run <code>rumd</code>. No installer, no runtime, nothing to
-  configure.</p>
+  configure. Every archive ships with a <code>.sha256</code> checksum.</p>
 
-  <h3>Download for your platform</h3>
   <div class="downloads">
     <a class="download" href="https://github.com/dkijkuit/rumd/releases/download/v0.1.1/rumd-v0.1.1-x86_64-unknown-linux-gnu.tar.gz">
       <span class="dl-os">Linux</span>
@@ -233,15 +242,42 @@
       <span class="dl-meta">x86_64 · .zip</span>
     </a>
   </div>
-  <p class="fine">Every archive ships with a <code>.sha256</code> checksum.
-  First run: <strong>Linux</strong> needs the usual X11/Wayland client
-  libraries (<code>libxkbcommon</code>, <code>libwayland-client</code>,
-  <code>libX11</code>) — most desktops already have them;
-  <strong>macOS</strong> is unsigned, so if Gatekeeper blocks it run
-  <code>xattr -cr rumd</code> once or right-click → Open;
-  <strong>Windows</strong> SmartScreen → More info → Run anyway.
-  See the <a href="https://github.com/dkijkuit/rumd/releases/latest">release
-  notes</a> for details.</p>
+
+  <div class="notes">
+    <div class="note">
+      <strong>Linux</strong>
+      Needs the usual X11/Wayland client libraries
+      (<code>libxkbcommon</code>, <code>libwayland-client</code>,
+      <code>libX11</code>) — most desktops already have them.
+    </div>
+    <div class="note">
+      <strong>macOS</strong>
+      The binary is unsigned: if Gatekeeper blocks it, run
+      <code>xattr -cr rumd</code> once, or right-click → Open.
+    </div>
+    <div class="note">
+      <strong>Windows</strong>
+      SmartScreen may warn on first run — More info → Run anyway.
+    </div>
+  </div>
+  <p class="fine">Looking for another version or the checksum files? See the
+  <a href="https://github.com/dkijkuit/rumd/releases/latest">release
+  notes</a>.</p>
+</section>
+
+<section id="source">
+  <p class="eyebrow">Prefer to build it yourself?</p>
+  <h2>Build from source</h2>
+  <p class="install-lead">rumd builds with a recent stable Rust toolchain
+  (1.95 or newer). macOS and Windows need no extra prerequisites; on Linux
+  install the X11/Wayland development libraries first:</p>
+  <pre><code>sudo apt install libxkbcommon-dev libwayland-dev libx11-dev</code></pre>
+  <h3>Build</h3>
+  <pre><code>git clone https://github.com/dkijkuit/rumd.git
+cd rumd
+cargo build --release</code></pre>
+  <p>The binary is at <code>target/release/rumd</code> — read a file with
+  <code>rumd README.md</code>.</p>
 
   <h3>Flatpak</h3>
   <p>Build and install from source as a system-wide Flatpak
@@ -253,24 +289,6 @@
   org.freedesktop.Sdk.Extension.rust-stable//26.08
 flatpak-builder --install --system --force-clean build flatpak/io.github.dkijkuit.rumd.yml
 flatpak run io.github.dkijkuit.rumd</code></pre>
-
-  <h3>Build from source</h3>
-  <p>rumd builds with a recent stable Rust toolchain (1.95 or newer).</p>
-  <h4>Prerequisites</h4>
-  <ul>
-    <li><strong>Linux:</strong> X11/Wayland development libraries, e.g. on
-    Debian/Ubuntu:</li>
-  </ul>
-  <pre><code>sudo apt install libxkbcommon-dev libwayland-dev libx11-dev</code></pre>
-  <ul>
-    <li><strong>macOS / Windows:</strong> no extra prerequisites.</li>
-  </ul>
-  <h4>Build</h4>
-  <pre><code>git clone https://github.com/dkijkuit/rumd.git
-cd rumd
-cargo build --release</code></pre>
-  <h4>Read</h4>
-  <pre><code>./target/release/rumd README.md</code></pre>
 </section>
 
 </main>

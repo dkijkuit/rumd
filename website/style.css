@@ -385,20 +385,19 @@ kbd {
   white-space: nowrap;
 }
 
-/* Install */
+/* Install & build from source */
 
 .pill-version { color: #dbeafe; }
 
-#install h3 { margin: 1.6rem 0 0.6rem; font-size: 1.05rem; }
-#install h4 { margin: 1.2rem 0 0.4rem; font-size: 0.95rem; color: var(--muted); }
-#install ul { margin: 0 0 0.6rem 1.2rem; color: var(--muted); }
-#install .install-lead { color: var(--muted); max-width: 58ch; }
+#install h3, #source h3 { margin: 1.6rem 0 0.6rem; font-size: 1.05rem; }
+#install ul, #source ul { margin: 0 0 0.6rem 1.2rem; color: var(--muted); }
+#install .install-lead, #source .install-lead { color: var(--muted); max-width: 70ch; }
 
 .downloads {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 0.8rem;
-  margin: 0.8rem 0 1rem;
+  margin: 1.2rem 0 1rem;
 }
 
 .download {
@@ -420,10 +419,25 @@ kbd {
 .dl-os { font-weight: 600; }
 .dl-meta { color: var(--muted); font-size: 0.85rem; }
 
+.notes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.8rem;
+  margin: 0 0 1rem;
+}
+.note {
+  padding: 0.85rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+.note strong { display: block; color: var(--text); margin-bottom: 0.15rem; }
+
 .fine {
   color: var(--muted);
   font-size: 0.88rem;
-  max-width: 72ch;
 }
 
 pre {
