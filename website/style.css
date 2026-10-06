@@ -391,7 +391,7 @@ kbd {
 
 #install h3, #source h3 { margin: 1.6rem 0 0.6rem; font-size: 1.05rem; }
 #install ul, #source ul { margin: 0 0 0.6rem 1.2rem; color: var(--muted); }
-#install .install-lead, #source .install-lead { color: var(--muted); max-width: 70ch; }
+#install .install-lead, #source .install-lead { color: var(--muted); }
 
 .downloads {
   display: grid;
