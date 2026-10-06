@@ -99,7 +99,7 @@ jobs:
           path: rumd-*.flatpak
 
   release:
-    needs: build
+    needs: [build, flatpak]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -147,21 +147,16 @@ jobs:
           if-no-files-found: ignore
 
   website-version:
-    # Stamp the released tag into the website, commit it to main, and deploy
-    # the site. The deploy steps live here because pushes made with
-    # GITHUB_TOKEN do not trigger the Pages workflow.
+    # Stamp the released tag into the website, commit it to main, and trigger
+    # the Pages workflow. Deploying here directly is not possible: the
+    # github-pages environment only allows main, and this job runs on a tag
+    # ref. GITHUB_TOKEN pushes don't trigger workflows, so dispatch pages.yml
+    # explicitly (workflow_dispatch runs created with GITHUB_TOKEN do run).
     needs: [release, screenshots]
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    concurrency:
-      group: pages
-      cancel-in-progress: false
+      actions: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -201,9 +196,7 @@ jobs:
             git commit -m "chore: website version ${GITHUB_REF_NAME}"
             git push origin main
           fi
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: website
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Trigger Pages deploy
+        run: gh workflow run pages.yml --ref main -R "${{ github.repository }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
