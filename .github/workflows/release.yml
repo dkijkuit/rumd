@@ -120,3 +120,59 @@ jobs:
               run `xattr -cr rumd` once, or right-click → Open.
             - **Windows**: SmartScreen may warn on first run —
               "More info" → "Run anyway".
+
+  website-version:
+    # Stamp the released tag into the website, commit it to main, and deploy
+    # the site. The deploy steps live here because pushes made with
+    # GITHUB_TOKEN do not trigger the Pages workflow.
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Stamp release version into the website
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          OLD="$(grep -oE 'rumd-version: [0-9.]+' website/index.html | awk '{print $2}')"
+          if [ -z "$OLD" ]; then
+            echo "::error::rumd-version marker not found in website/index.html"
+            exit 1
+          fi
+          if [ "$OLD" = "$TAG" ]; then
+            echo "Website already at v$TAG"
+          else
+            sed -i "s/v${OLD}/v${TAG}/g" website/index.html
+            sed -i -E "s/(rumd-version: )[0-9.]+/\1${TAG}/" website/index.html
+            if ! grep -q "v${TAG}" website/index.html; then
+              echo "::error::version stamp failed"
+              exit 1
+            fi
+          fi
+      - name: Commit stamped version to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add website/index.html
+          if git diff --cached --quiet; then
+            echo "Nothing to commit"
+          else
+            git commit -m "chore: website version ${GITHUB_REF_NAME}"
+            git push origin main
+          fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: website
+      - id: deployment
+        uses: actions/deploy-pages@v4

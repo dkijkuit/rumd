@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body id="top">
+<!-- rumd-version: 0.1.1 (updated automatically by .github/workflows/release.yml; the version below is stamped from the release tag) -->
 
 <header class="nav">
   <a class="brand" href="#top">
@@ -19,7 +20,7 @@
     <a href="#features">Features</a>
     <a href="#screenshots">Screenshots</a>
     <a href="#shortcuts">Shortcuts</a>
-    <a href="#get-started">Get started</a>
+    <a href="#install">Install</a>
     <a class="btn btn-small" href="https://github.com/dkijkuit/rumd">GitHub</a>
   </nav>
 </header>
@@ -27,14 +28,14 @@
 <main>
 
 <section class="hero">
-  <p class="pill">Pure Rust · No Electron · 100% local</p>
+  <p class="pill"><span class="pill-version">v0.1.1</span> · Pure Rust · No Electron · 100% local</p>
   <img class="hero-logo" src="assets/logo.png" alt="The rumd logo: a markdown document marked &lt;M&gt;">
   <h1>A cross-platform markdown viewer in <span class="accent">pure Rust</span></h1>
   <p class="lead">rumd renders your markdown live — in a clean reading view
   or side by side with its source — and refreshes automatically when the
   file changes on disk.</p>
   <div class="cta">
-    <a class="btn" href="#get-started">Get started</a>
+    <a class="btn" href="#install">Download</a>
     <a class="btn btn-ghost" href="https://github.com/dkijkuit/rumd">View source</a>
   </div>
   <p class="platforms">Linux · macOS · Windows — a single native binary</p>
@@ -205,12 +206,57 @@
   </table>
 </section>
 
-<section id="get-started">
+<section id="install">
   <p class="eyebrow">Up and running</p>
-  <h2>Get started</h2>
-  <p>rumd is built from source with a recent stable Rust toolchain
-  (1.95 or newer).</p>
-  <h3>1. Prerequisites</h3>
+  <h2>Install</h2>
+  <p class="install-lead">Prebuilt binaries are attached to every release —
+  the latest is <strong>v0.1.1</strong>. Unpack the archive for your
+  platform and run <code>rumd</code>. No installer, no runtime, nothing to
+  configure.</p>
+
+  <h3>Download for your platform</h3>
+  <div class="downloads">
+    <a class="download" href="https://github.com/dkijkuit/rumd/releases/download/v0.1.1/rumd-v0.1.1-x86_64-unknown-linux-gnu.tar.gz">
+      <span class="dl-os">Linux</span>
+      <span class="dl-meta">x86_64 · .tar.gz</span>
+    </a>
+    <a class="download" href="https://github.com/dkijkuit/rumd/releases/download/v0.1.1/rumd-v0.1.1-aarch64-apple-darwin.tar.gz">
+      <span class="dl-os">macOS</span>
+      <span class="dl-meta">Apple Silicon · .tar.gz</span>
+    </a>
+    <a class="download" href="https://github.com/dkijkuit/rumd/releases/download/v0.1.1/rumd-v0.1.1-x86_64-apple-darwin.tar.gz">
+      <span class="dl-os">macOS</span>
+      <span class="dl-meta">Intel · .tar.gz</span>
+    </a>
+    <a class="download" href="https://github.com/dkijkuit/rumd/releases/download/v0.1.1/rumd-v0.1.1-x86_64-pc-windows-msvc.zip">
+      <span class="dl-os">Windows</span>
+      <span class="dl-meta">x86_64 · .zip</span>
+    </a>
+  </div>
+  <p class="fine">Every archive ships with a <code>.sha256</code> checksum.
+  First run: <strong>Linux</strong> needs the usual X11/Wayland client
+  libraries (<code>libxkbcommon</code>, <code>libwayland-client</code>,
+  <code>libX11</code>) — most desktops already have them;
+  <strong>macOS</strong> is unsigned, so if Gatekeeper blocks it run
+  <code>xattr -cr rumd</code> once or right-click → Open;
+  <strong>Windows</strong> SmartScreen → More info → Run anyway.
+  See the <a href="https://github.com/dkijkuit/rumd/releases/latest">release
+  notes</a> for details.</p>
+
+  <h3>Flatpak</h3>
+  <p>Build and install from source as a system-wide Flatpak
+  (<code>flatpak-builder</code> and the
+  <code>org.freedesktop.Platform//26.08</code> runtime, SDK, and
+  <code>rust-stable</code> extension are required):</p>
+  <pre><code>flatpak install --system flathub \
+  org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08 \
+  org.freedesktop.Sdk.Extension.rust-stable//26.08
+flatpak-builder --install --system --force-clean build flatpak/io.github.dkijkuit.rumd.yml
+flatpak run io.github.dkijkuit.rumd</code></pre>
+
+  <h3>Build from source</h3>
+  <p>rumd builds with a recent stable Rust toolchain (1.95 or newer).</p>
+  <h4>Prerequisites</h4>
   <ul>
     <li><strong>Linux:</strong> X11/Wayland development libraries, e.g. on
     Debian/Ubuntu:</li>
@@ -219,11 +265,11 @@
   <ul>
     <li><strong>macOS / Windows:</strong> no extra prerequisites.</li>
   </ul>
-  <h3>2. Build</h3>
+  <h4>Build</h4>
   <pre><code>git clone https://github.com/dkijkuit/rumd.git
 cd rumd
 cargo build --release</code></pre>
-  <h3>3. Read</h3>
+  <h4>Read</h4>
   <pre><code>./target/release/rumd README.md</code></pre>
 </section>
 
@@ -232,7 +278,7 @@ cargo build --release</code></pre>
 <footer>
   <img class="footer-logo" src="assets/logo.png" alt="">
   <p><strong>rumd</strong> — markdown viewing, the Rust way. Built with Rust and egui.</p>
-  <p><a href="https://github.com/dkijkuit/rumd">Source</a> · <a href="#top">Back to top</a></p>
+  <p><a href="https://github.com/dkijkuit/rumd">Source</a> · <a href="https://github.com/dkijkuit/rumd/releases">Releases</a> · <a href="#top">Back to top</a></p>
 </footer>
 
 <div class="lightbox" id="shot-hero" role="dialog" aria-label="Screenshot full size">
