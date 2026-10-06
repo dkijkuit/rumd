@@ -1733,6 +1733,100 @@ mod tests {
         std::fs::remove_file(&doc).unwrap();
     }
 
+    /// Capture the website screenshots into `website/assets/`. Gated behind
+    /// RUMD_CAPTURE=1 so ordinary `cargo test` runs stay hermetic; the
+    /// release workflow runs it with:
+    ///
+    ///     RUMD_CAPTURE=1 cargo test capture_website_screenshots -- --nocapture
+    ///
+    /// Override the destination with RUMD_CAPTURE_DIR. The subject is the
+    /// dummy document in tests/fixtures/sample.md, never a real project
+    /// file.
+    #[test]
+    fn capture_website_screenshots() {
+        if std::env::var("RUMD_CAPTURE").map_or(true, |v| v != "1") {
+            return;
+        }
+        let out_dir = std::env::var("RUMD_CAPTURE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("website/assets")
+            });
+        std::fs::create_dir_all(&out_dir).unwrap();
+
+        // A friendly dummy name for the website title bar; kept out of
+        // stable_path so the snapshot tests keep their own fixture name.
+        let dir = std::env::temp_dir().join(format!("rumd_capture_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = dir.join("aurora-field-notes.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+        std::fs::write(&doc, include_str!("../tests/fixtures/sample.md")).unwrap();
+
+        let capture = |name: &str,
+                       theme: egui::ThemePreference,
+                       mode: ViewMode,
+                       toc: bool,
+                       search_query: Option<&str>| {
+            let app = Rc::new(RefCell::new(App::new(None)));
+            {
+                let mut a = app.borrow_mut();
+                a.theme_pref = theme;
+                a.mode = mode;
+                a.open_path(&doc);
+                if let Some(query) = search_query {
+                    a.search.open = true;
+                    a.search.query = query.to_owned();
+                    a.recompute_matches();
+                }
+            }
+            let app_for_ui = app.clone();
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(1280.0, 800.0))
+                .build_ui(move |ui| {
+                    app_for_ui.borrow_mut().show(ui);
+                });
+            if toc {
+                harness.get_by_label("Table of contents").click();
+            }
+            harness.run();
+            harness.run();
+            let image = harness.render().expect("screenshot render must succeed");
+            image.save(out_dir.join(name)).expect("screenshot save must succeed");
+        };
+
+        capture(
+            "dark-rendered.png",
+            egui::ThemePreference::Dark,
+            ViewMode::Rendered,
+            true,
+            None,
+        );
+        capture(
+            "dark-split.png",
+            egui::ThemePreference::Dark,
+            ViewMode::Split,
+            false,
+            None,
+        );
+        capture(
+            "light-rendered.png",
+            egui::ThemePreference::Light,
+            ViewMode::Rendered,
+            false,
+            None,
+        );
+        capture(
+            "dark-search.png",
+            egui::ThemePreference::Dark,
+            ViewMode::Rendered,
+            false,
+            Some("sensor"),
+        );
+
+        std::fs::remove_file(&doc).unwrap();
+        std::fs::remove_dir(&dir).ok();
+    }
+
     #[test]
     fn top_bar_light_theme_snapshot() {
         let doc = stable_path("top_bar_light");

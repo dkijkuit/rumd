@@ -121,11 +121,36 @@ jobs:
             - **Windows**: SmartScreen may warn on first run —
               "More info" → "Run anyway".
 
+  screenshots:
+    # Refresh the website screenshots from the dummy document in
+    # tests/fixtures/sample.md. continue-on-error so a rendering hiccup on
+    # the runner never blocks publishing a release or the site update.
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: screenshots
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev \
+            libxkbcommon-x11-dev libvulkan1 mesa-vulkan-drivers
+      - name: Capture website screenshots
+        run: RUMD_CAPTURE=1 cargo test capture_website_screenshots -- --nocapture
+      - uses: actions/upload-artifact@v4
+        with:
+          name: website-screenshots
+          path: website/assets/*.png
+          if-no-files-found: ignore
+
   website-version:
     # Stamp the released tag into the website, commit it to main, and deploy
     # the site. The deploy steps live here because pushes made with
     # GITHUB_TOKEN do not trigger the Pages workflow.
-    needs: release
+    needs: [release, screenshots]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -159,11 +184,17 @@ jobs:
               exit 1
             fi
           fi
+      - name: Download fresh screenshots
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: website-screenshots
+          path: website/assets
       - name: Commit stamped version to main
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add website/index.html
+          git add website
           if git diff --cached --quiet; then
             echo "Nothing to commit"
           else

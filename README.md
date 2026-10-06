@@ -78,6 +78,21 @@ flatpak-builder --install --system --force-clean build flatpak/io.github.dkijkui
 flatpak run io.github.dkijkuit.rumd
 ```
 
+## Release checklist
+
+1. Bump the version in `Cargo.toml` and commit.
+2. Update the Features and Shortcuts sections here if anything changed.
+3. Mirror those changes on the website (`website/index.html`) — prose only:
+   the version, download links, and screenshots are updated automatically
+   on tag push.
+4. Tag and push the tag:
+   `git tag vX.Y.Z && git push origin vX.Y.Z`
+
+The release workflow then builds the binaries, publishes the release,
+captures fresh website screenshots from `tests/fixtures/sample.md` with
+`RUMD_CAPTURE=1 cargo test capture_website_screenshots`, stamps the tag
+into the website, and deploys it to GitHub Pages.
+
 ## Testing
 
 ```sh
