@@ -26,6 +26,9 @@
     <binary>rumd</binary>
   </provides>
   <releases>
+    <release version="0.1.1" date="2026-10-06">
+      <description><p>Packaging fixes.</p></description>
+    </release>
     <release version="0.1.0" date="2026-10-05">
       <description><p>First packaged release.</p></description>
     </release>
