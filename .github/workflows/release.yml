@@ -74,7 +74,10 @@ jobs:
             rumd-*.zip
 
   flatpak:
-    runs-on: ubuntu-22.04
+    # Needs flatpak-builder >= 1.4: it runs appstream compose host-side
+    # (appstreamcli), while 1.2.x (jammy) execs appstream-compose inside the
+    # SDK sandbox and freedesktop Sdk 26.08 no longer ships that binary.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install flatpak-builder and dependencies
