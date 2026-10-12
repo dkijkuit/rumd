@@ -13,6 +13,7 @@ pub type EntryPath = Vec<(u8, String)>;
 /// One markdown heading: nesting level (1-6), display title, and the byte
 /// offset of its line in the raw markdown (matching `search::split_sections`
 /// boundaries, so the offset maps to a rendered section start).
+#[derive(Clone)]
 pub struct TocEntry {
     pub level: u8,
     pub title: String,
@@ -112,7 +113,7 @@ pub fn visible(entries: &[TocEntry], collapsed: &HashSet<EntryPath>) -> Vec<usiz
 }
 
 /// What the user did inside the panel this frame.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct TocPanelIntents {
     /// Byte offset of a clicked entry: jump the document view there.
     pub jump_to: Option<usize>,
@@ -121,12 +122,16 @@ pub struct TocPanelIntents {
     pub toggled: Option<EntryPath>,
 }
 
-/// The sidebar contents: one indented row per visible entry, groups
-/// prefixed with an expand/collapse chevron.
+/// The sidebar contents: one flat row per visible entry, groups prefixed
+/// with an expand/collapse chevron in a left gutter. Clicking a row jumps
+/// to its section; clicking a group's chevron toggles the group. The
+/// `active` entry (the section currently in view) paints with the
+/// selection style.
 pub fn show_panel(
     ui: &mut egui::Ui,
     entries: &[TocEntry],
     collapsed: &HashSet<EntryPath>,
+    active: Option<usize>,
 ) -> TocPanelIntents {
     let mut intents = TocPanelIntents::default();
     if entries.is_empty() {
@@ -141,45 +146,132 @@ pub fn show_panel(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let shown = visible(entries, collapsed);
-            let row_h = ui.text_style_height(&egui::TextStyle::Small);
+            let row_h = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
             for i in shown {
                 let entry = &entries[i];
                 let group = has_children(entries, i);
                 let expanded = group && !collapsed.contains(&entry_path(entries, i));
-                ui.horizontal(|ui| {
-                    ui.add_space((entry.level as f32 - 1.0) * 14.0);
-                    if group {
-                        if chevron(ui, expanded, &entry.title).clicked() {
-                            intents.toggled = Some(entry_path(entries, i));
-                        }
-                    } else {
-                        ui.add_space(16.0);
+                let is_active = active == Some(i);
+                let (row_rect, row) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), row_h),
+                    egui::Sense::click(),
+                );
+                let title = entry.title.clone();
+                row.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, row.enabled(), &title)
+                });
+                let indent = (entry.level as f32 - 1.0) * INDENT;
+                let chev_rect = egui::Rect::from_center_size(
+                    egui::pos2(row_rect.left() + indent + GUTTER / 2.0, row_rect.center().y),
+                    egui::vec2(GUTTER, row_h),
+                );
+                // The whole row is one hover target: the fill reacts to the
+                // pointer anywhere on it, chevron included.
+                let visuals = ui.visuals();
+                let hovered = row.hovered();
+                let fill = if is_active {
+                    visuals.selection.bg_fill
+                } else if hovered {
+                    visuals.widgets.hovered.bg_fill
+                } else {
+                    egui::Color32::TRANSPARENT
+                };
+                if fill != egui::Color32::TRANSPARENT {
+                    ui.painter().rect_filled(row_rect, ROW_ROUNDING, fill);
+                }
+                let color = if is_active {
+                    visuals.selection.stroke.color
+                } else {
+                    match entry.level {
+                        1 => visuals.strong_text_color(),
+                        2 => visuals.text_color(),
+                        _ => visuals.weak_text_color(),
                     }
-                    let button =
-                        egui::Button::new(egui::RichText::new(entry.title.clone()).small())
-                            .truncate()
-                            .min_size(egui::vec2(ui.available_width(), row_h));
-                    if ui.add(button).clicked() {
+                };
+                paint_title(
+                    ui,
+                    row_rect.left() + indent + GUTTER,
+                    row_rect,
+                    &title,
+                    color,
+                );
+                if group {
+                    let chevron = chevron(ui, chev_rect, expanded, &title);
+                    if chevron.clicked() {
+                        intents.toggled = Some(entry_path(entries, i));
+                    } else if row.clicked() {
                         intents.jump_to = Some(entry.byte);
                     }
-                });
+                } else if row.clicked() {
+                    intents.jump_to = Some(entry.byte);
+                }
             }
         });
     intents
 }
 
-/// A small expand/collapse glyph button. The visible glyph is minimal, so
-/// the accessible label spells the action out ("Collapse Title").
-fn chevron(ui: &mut egui::Ui, expanded: bool, title: &str) -> egui::Response {
-    let side = ui.text_style_height(&egui::TextStyle::Small);
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(side + 2.0, side), egui::Sense::click());
+/// Width of the chevron gutter every row reserves, so titles align
+/// between group and leaf entries.
+const GUTTER: f32 = 16.0;
+/// Indentation per heading level.
+const INDENT: f32 = 14.0;
+/// Corner rounding of the row hover/selection fill.
+const ROW_ROUNDING: f32 = 4.0;
+
+/// Draw a row's title, left-aligned and vertically centered in the row,
+/// elided with an ellipsis when it does not fit.
+fn paint_title(
+    ui: &egui::Ui,
+    text_x: f32,
+    row_rect: egui::Rect,
+    title: &str,
+    color: egui::Color32,
+) {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let max_w = row_rect.right() - text_x;
+    let text = elided(ui, title, &font, max_w);
+    ui.painter().text(
+        egui::pos2(text_x, row_rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        text,
+        font,
+        color,
+    );
+}
+
+/// Cut `text` back until it (plus an ellipsis) fits `max_w`.
+fn elided(ui: &egui::Ui, text: &str, font: &egui::FontId, max_w: f32) -> String {
+    let measure = |s: &str| {
+        ui.painter()
+            .layout_no_wrap(s.to_owned(), font.clone(), egui::Color32::WHITE)
+            .size()
+            .x
+    };
+    if measure(text) <= max_w {
+        return text.to_owned();
+    }
+    let mut chars: Vec<char> = text.chars().collect();
+    while chars.len() > 1 {
+        chars.pop();
+        let candidate: String = chars.iter().collect::<String>() + "…";
+        if measure(&candidate) <= max_w {
+            return candidate;
+        }
+    }
+    "…".to_owned()
+}
+
+/// A small expand/collapse glyph button in the row's gutter. The visible
+/// glyph is minimal, so the accessible label spells the action out
+/// ("Collapse Title").
+fn chevron(ui: &mut egui::Ui, rect: egui::Rect, expanded: bool, title: &str) -> egui::Response {
+    let response = ui.allocate_rect(rect, egui::Sense::click());
+    let label = if expanded {
+        format!("Collapse {title}")
+    } else {
+        format!("Expand {title}")
+    };
     response.widget_info(|| {
-        let label = if expanded {
-            format!("Collapse {title}")
-        } else {
-            format!("Expand {title}")
-        };
         egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), &label)
     });
     let color = if response.hovered() {
@@ -190,7 +282,7 @@ fn chevron(ui: &mut egui::Ui, expanded: bool, title: &str) -> egui::Response {
     // Painted instead of typeset: the default font stack has no ▸/▾
     // glyphs (they render as tofu squares). Same approach as icons.rs.
     let c = rect.center();
-    let w = side * 0.42;
+    let w = rect.height() * 0.42;
     let points = if expanded {
         vec![
             egui::pos2(c.x - w, c.y - w * 0.6),
@@ -215,6 +307,7 @@ fn chevron(ui: &mut egui::Ui, expanded: bool, title: &str) -> egui::Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui_kittest::kittest::Queryable;
 
     #[test]
     fn extracts_levels_titles_and_byte_offsets() {
@@ -294,15 +387,174 @@ mod tests {
         headings("# A\n\n## B\n\n### C\n\n## D\n\n# E\n")
     }
 
+    fn md_offsets(md: &str) -> Vec<usize> {
+        vec![
+            md.find("# A").unwrap(),
+            md.find("## B").unwrap(),
+            md.find("### C").unwrap(),
+            md.find("## D").unwrap(),
+            md.find("# E").unwrap(),
+        ]
+    }
+
+    fn render(
+        entries: &[TocEntry],
+        active: Option<usize>,
+    ) -> egui_kittest::Harness<'static, TocPanelIntents> {
+        let entries = entries.to_vec();
+        egui_kittest::Harness::builder()
+            .with_size(egui::vec2(300.0, 400.0))
+            .build_ui_state(
+                // Intents are per-frame (the app merges them into its own
+                // state); accumulate here so a repaint frame after the
+                // click cannot wipe them.
+                move |ui, state| {
+                    let intents = show_panel(ui, &entries, &Default::default(), active);
+                    if intents.jump_to.is_some() {
+                        state.jump_to = intents.jump_to;
+                    }
+                    if intents.toggled.is_some() {
+                        state.toggled = intents.toggled;
+                    }
+                },
+                TocPanelIntents::default(),
+            )
+    }
+
+    fn filled_rects<State>(harness: &egui_kittest::Harness<'_, State>) -> Vec<egui::Rect> {
+        harness
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect) if rect.fill != egui::Color32::TRANSPARENT => {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn text_color_in<State>(
+        harness: &egui_kittest::Harness<'_, State>,
+        row: egui::Rect,
+    ) -> Option<egui::Color32> {
+        harness
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if row.contains_rect(text.visual_bounding_rect()) => {
+                    Some(text.fallback_color)
+                }
+                _ => None,
+            })
+            .next()
+    }
+
+    #[test]
+    fn clicking_a_leaf_row_jumps_to_its_section() {
+        let entries = sample();
+        let md = "# A\n\n## B\n\n### C\n\n## D\n\n# E\n";
+        let mut harness = render(&entries, None);
+        harness.get_by_label("C").click();
+        harness.run();
+        let intents = harness.state().clone();
+        assert_eq!(intents.jump_to, Some(md_offsets(md)[2]));
+        assert!(intents.toggled.is_none());
+    }
+
+    #[test]
+    fn clicking_a_group_row_jumps_too() {
+        let entries = sample();
+        let md = "# A\n\n## B\n\n### C\n\n## D\n\n# E\n";
+        let mut harness = render(&entries, None);
+        harness.get_by_label("B").click();
+        harness.run();
+        let intents = harness.state().clone();
+        assert_eq!(intents.jump_to, Some(md_offsets(md)[1]));
+    }
+
+    #[test]
+    fn clicking_a_chevron_toggles_without_jumping() {
+        let entries = sample();
+        let mut harness = render(&entries, None);
+        harness.get_by_label("Collapse B").click();
+        harness.run();
+        let intents = harness.state().clone();
+        assert_eq!(intents.toggled, Some(entry_path(&entries, 1)));
+        assert!(intents.jump_to.is_none(), "chevron must not jump");
+    }
+
+    #[test]
+    fn rows_paint_no_fill_until_hovered_or_active() {
+        let entries = sample();
+        let harness = render(&entries, None);
+        let rows: Vec<egui::Rect> = ["A", "B", "C", "D", "E"]
+            .iter()
+            .map(|title| harness.get_by_label(title).rect())
+            .collect();
+        let fills: Vec<egui::Rect> = filled_rects(&harness)
+            .into_iter()
+            .filter(|fill| {
+                rows.iter()
+                    .any(|row| fill.height() <= row.height() + 4.0 && fill.intersects(*row))
+            })
+            .collect();
+        assert!(
+            fills.is_empty(),
+            "idle rows must be flat, found fills at {fills:?}"
+        );
+    }
+
+    #[test]
+    fn title_colors_step_down_by_level() {
+        let entries = sample();
+        let harness = render(&entries, None);
+        let ctx = egui::Context::default();
+        let style = ctx.style_of(egui::Theme::Dark);
+        let visuals = &style.visuals;
+        let a = harness.get_by_label("A").rect();
+        let b = harness.get_by_label("B").rect();
+        let c = harness.get_by_label("C").rect();
+        assert_eq!(
+            text_color_in(&harness, a),
+            Some(visuals.strong_text_color())
+        );
+        assert_eq!(text_color_in(&harness, b), Some(visuals.text_color()));
+        assert_eq!(text_color_in(&harness, c), Some(visuals.weak_text_color()));
+    }
+
+    #[test]
+    fn the_active_row_paints_selection_style() {
+        let entries = sample();
+        let harness = render(&entries, Some(2));
+        let ctx = egui::Context::default();
+        let style = ctx.style_of(egui::Theme::Dark);
+        let visuals = &style.visuals;
+        let c = harness.get_by_label("C").rect();
+        let d = harness.get_by_label("D").rect();
+        let covering = |row: egui::Rect| {
+            filled_rects(&harness).into_iter().any(|fill| {
+                fill.height() <= row.height() + 4.0 && fill.contains_rect(row.shrink(1.0))
+            })
+        };
+        assert!(covering(c), "the active row must paint a selection fill");
+        assert!(
+            !covering(d),
+            "inactive rows must not paint a selection fill"
+        );
+        assert_eq!(
+            text_color_in(&harness, c),
+            Some(visuals.selection.stroke.color),
+            "the active row's title must use the accent color"
+        );
+    }
+
     #[test]
     fn chevron_paints_a_filled_triangle() {
-        use egui_kittest::kittest::Queryable;
         let entries = headings("# Top\n\n## Sub\n\nbody\n");
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(300.0, 200.0))
-            .build_ui(|ui| {
-                show_panel(ui, &entries, &Default::default());
-            });
+        let mut harness = render(&entries, None);
         harness.run();
         let rect = harness.get_by_label("Collapse Top").rect();
         let triangles = harness

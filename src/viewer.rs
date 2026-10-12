@@ -3,8 +3,10 @@ use std::ops::Range;
 use eframe::egui;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
-/// Target width of the centered rendered-content column (~70 characters).
-pub const COLUMN_WIDTH: f32 = 660.0;
+/// Target width of the centered rendered-content column. Typora's
+/// default theme reads at ~914px; rumd keeps a slightly narrower column
+/// for split-view comfort.
+pub const COLUMN_WIDTH: f32 = 850.0;
 const COLUMN_MARGIN: f32 = 40.0;
 const COLUMN_MIN: f32 = 320.0;
 const SYNTAX_LIGHT: &str = "InspiredGitHub";
@@ -16,6 +18,26 @@ pub fn column_width(available: f32) -> f32 {
     COLUMN_WIDTH
         .min(available - 2.0 * COLUMN_MARGIN)
         .max(COLUMN_MIN.min(available))
+}
+
+/// Which section the viewport is reading: the last one whose top edge has
+/// crossed the view's top, or — when scrolled to the bottom, where the
+/// last section can never reach the top — simply the last section. A
+/// document that fits the viewport entirely is never "scrolled": the top
+/// rule applies.
+pub fn active_section(rects: &[egui::Rect], view_top: f32, view_bottom: f32) -> Option<usize> {
+    let last = rects.len().checked_sub(1)?;
+    let scrolled_down = rects[0].top() < view_top - 1.0;
+    if scrolled_down && view_bottom >= rects[last].bottom() - 1.0 {
+        return Some(last);
+    }
+    let slack = 2.0;
+    Some(
+        rects
+            .iter()
+            .rposition(|rect| rect.top() <= view_top + slack)
+            .unwrap_or(0),
+    )
 }
 
 /// Renders markdown into egui widgets. Keeps a parse cache between frames.
@@ -42,6 +64,9 @@ pub struct RenderedView {
     /// Content-space top of the ToC target last frame, for the stability
     /// check that ends the chase.
     toc_target_top: Option<f32>,
+    /// Section currently in view (see [`active_section`]); drives the
+    /// ToC sidebar's row highlight.
+    active_section: Option<usize>,
 }
 
 /// What to highlight in the rendered view while the find bar is open.
@@ -66,6 +91,12 @@ impl RenderedView {
         self.toc_target_top = None;
     }
 
+    /// The section currently in view, from the last rendered frame
+    /// (`None` before the first frame or without headings).
+    pub fn active_section(&self) -> Option<usize> {
+        self.active_section
+    }
+
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -75,6 +106,28 @@ impl RenderedView {
         toc_jump: &mut Option<usize>,
         search: Option<&SearchHighlight>,
     ) {
+        // The rendered view owns its typography: Inter with real bold /
+        // italic families and fixed text sizes, so documents always read
+        // at the sizes the vendored renderer's Typora metrics assume.
+        // New font definitions only become active at the start of the
+        // NEXT pass, and laying text out against an unbound family
+        // panics — so on a context that cannot see the families yet
+        // (tests; production installs them before the first pass),
+        // install them and spend this pass on a discard instead.
+        let heading_family = egui::FontFamily::Name(crate::fonts::FAMILY_HEADING.into());
+        if !ui
+            .ctx()
+            .fonts(|f| f.definitions().families.contains_key(&heading_family))
+        {
+            crate::fonts::install_once(ui.ctx());
+            ui.ctx().request_discard("rumd fonts installed");
+            return;
+        }
+        ui.style_mut().text_styles = std::collections::BTreeMap::from([
+            (egui::TextStyle::Small, egui::FontId::proportional(13.0)),
+            (egui::TextStyle::Body, egui::FontId::proportional(16.0)),
+            (egui::TextStyle::Monospace, egui::FontId::monospace(14.0)),
+        ]);
         // CentralPanel clips overflow, so long documents need a ScrollArea.
         // (egui_commonmark's show_scrollable assumes static markdown and
         // requires manual cache clearing on every change.)
@@ -228,6 +281,13 @@ impl RenderedView {
                 if let Some(toc) = &mut toc_layout {
                     toc.content_height = inner.min_rect().height();
                 }
+                // The section at the top of the viewport is the one being
+                // read; the ToC sidebar highlights its entry.
+                self.active_section = active_section(
+                    &section_rects,
+                    inner.clip_rect().top(),
+                    inner.clip_rect().bottom(),
+                );
                 // Tell the ScrollArea how tall the content is: nothing else
                 // expands this ui, so the measured content would stay zero.
                 ui.expand_to_include_rect(inner.min_rect());
@@ -597,19 +657,22 @@ mod tests {
         harness.run();
         harness.run();
         // Wheel the document to the bottom (negative y reveals content
-        // further down); clamped at max scroll.
+        // further down); clamped at max scroll. Generous steps: the
+        // scroll extent only grows as culled sections materialize, so
+        // the bottom is approached in a measured crawl, and Typora-grade
+        // line spacing makes documents ~60% taller than before.
         harness
             .input_mut()
             .events
             .push(egui::Event::PointerMoved(egui::pos2(300.0, 200.0)));
         harness.input_mut().events.push(egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
-            delta: egui::vec2(0.0, -4000.0),
+            delta: egui::vec2(0.0, -8000.0),
             modifiers: egui::Modifiers::NONE,
             phase: egui::TouchPhase::Move,
         });
         // Smooth scrolling animates for several frames after the event.
-        harness.run_steps(30);
+        harness.run_steps(80);
         harness.run();
         assert!(
             harness.query_by_label("Paragraph 70 text.").is_some(),
@@ -720,7 +783,7 @@ mod tests {
 
     #[test]
     fn column_width_clamps() {
-        assert_eq!(super::column_width(2000.0), 660.0);
+        assert_eq!(super::column_width(2000.0), 850.0);
         assert_eq!(super::column_width(600.0), 520.0); // available - 2*margin
         assert_eq!(super::column_width(300.0), 300.0); // never exceeds available
         assert_eq!(super::column_width(100.0), 100.0);
@@ -807,6 +870,89 @@ mod tests {
         for (l, r, t) in galleys.iter().take(6) {
             println!("galley {l}..{r}: {t:?}");
         }
+    }
+
+    /// The rendered view's Typora metrics, as measured from laid-out
+    /// text: 1.5× line leading, GitHub paragraph gaps, a real heading
+    /// ramp, and small gaps between list items. Regressions here are
+    /// exactly the "cluttered" look this typography replaced.
+    #[test]
+    fn rendered_typography_has_typora_metrics() {
+        let md = "# H1 Heading\n\n## H2 Heading\n\nfirst paragraph with quite a lot of text that will certainly wrap across multiple lines in the narrow test window so we can measure the line pitch inside a single paragraph galley yes more words here to be sure it wraps twice.\n\nsecond paragraph short.\n\n- item one alpha\n- item two beta\n- item three gamma\n\nfinal paragraph.\n".to_string();
+        let sections = crate::search::split_sections(&md);
+        let mut view = RenderedView::new();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 700.0))
+            .build_ui(move |ui| {
+                view.show(ui, &md, &sections, &mut None, &mut None, None);
+            });
+        harness.run();
+        harness.run();
+        let rows = text_rows(&harness);
+        let top = |needle: &str| {
+            rows.iter()
+                .find(|(_, _, text)| text.contains(needle))
+                .unwrap_or_else(|| panic!("{needle:?} not rendered"))
+                .0
+        };
+        let height = |needle: &str| {
+            rows.iter()
+                .find(|(_, _, text)| text.contains(needle))
+                .unwrap_or_else(|| panic!("{needle:?} not rendered"))
+                .1
+        };
+        // 1.5× leading on a 16px body = 24pt row pitch.
+        let p1 = top("first paragraph");
+        let p2 = top("window so we can");
+        let pitch = p2 - p1;
+        assert!(
+            (23.0..=25.0).contains(&pitch),
+            "body line pitch must be ~24 (1.5 × 16px body), got {pitch}"
+        );
+        // Paragraph gap: GitHub's 16px margin.
+        let gap = top("second paragraph") - (top("it wraps twice.") + pitch);
+        assert!(
+            (12.0..=20.0).contains(&gap),
+            "paragraph gap must be ~16, got {gap}"
+        );
+        // Real heading ramp: h1 materially taller than h2, h2 than body.
+        let (h1, h2, body) = (height("H1 Heading"), height("H2 Heading"), height("second paragraph"));
+        assert!(
+            h1 > h2 + 4.0,
+            "h1 ({h1}) must clearly outweigh h2 ({h2})"
+        );
+        assert!(
+            h2 > body + 4.0,
+            "h2 ({h2}) must clearly outweigh body ({body})"
+        );
+        // List items: full body pitch plus a small item gap.
+        let item_pitch = top("item two beta") - top("item one alpha");
+        assert!(
+            (26.0..=32.0).contains(&item_pitch),
+            "list item pitch must be body pitch + ~4pt gap, got {item_pitch}"
+        );
+    }
+
+    /// (top, ink height, trimmed text) of every rendered row.
+    fn text_rows(harness: &Harness<'_, ()>) -> Vec<(f32, f32, String)> {
+        let mut rows: Vec<(f32, f32, String)> = Vec::new();
+        for clipped in harness.output().shapes.iter() {
+            if let egui::Shape::Text(t) = &clipped.shape {
+                for row in t.galley.rows.iter() {
+                    let text: String = row.row.glyphs.iter().map(|g| g.chr).collect();
+                    let text = text.trim().to_owned();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    rows.push((
+                        t.pos.y + row.rect().top(),
+                        row.rect().height(),
+                        text.chars().take(28).collect(),
+                    ));
+                }
+            }
+        }
+        rows
     }
 
     #[test]
@@ -1529,5 +1675,56 @@ mod tests {
             overflowing.is_empty(),
             "text galleys overflow the column (limit {limit}): {overflowing:?}"
         );
+    }
+
+    #[test]
+    fn active_section_picks_the_section_at_the_viewport_top() {
+        let rects = vec![
+            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(600.0, 100.0)),
+            egui::Rect::from_min_size(egui::pos2(0.0, 100.0), egui::vec2(600.0, 100.0)),
+            egui::Rect::from_min_size(egui::pos2(0.0, 200.0), egui::vec2(600.0, 100.0)),
+        ];
+        // The view's top edge sits 30px into the second section.
+        assert_eq!(active_section(&rects, 130.0, 230.0), Some(1));
+        // And into the third section.
+        assert_eq!(active_section(&rects, 210.0, 229.0), Some(2));
+    }
+
+    #[test]
+    fn active_section_scrolled_to_the_bottom_is_the_last_section() {
+        let rects = vec![
+            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(600.0, 100.0)),
+            egui::Rect::from_min_size(egui::pos2(0.0, 100.0), egui::vec2(600.0, 100.0)),
+            egui::Rect::from_min_size(egui::pos2(0.0, 200.0), egui::vec2(600.0, 100.0)),
+        ];
+        // Near the end of the document the last section can never reach
+        // the top; the bottom-of-scroll rule must pick it anyway.
+        assert_eq!(active_section(&rects, 250.0, 300.0), Some(2));
+    }
+
+    #[test]
+    fn active_section_when_everything_fits_is_the_top_one() {
+        let rects = vec![
+            egui::Rect::from_min_size(egui::pos2(0.0, 8.0), egui::vec2(600.0, 60.0)),
+            egui::Rect::from_min_size(egui::pos2(0.0, 68.0), egui::vec2(600.0, 60.0)),
+            egui::Rect::from_min_size(egui::pos2(0.0, 128.0), egui::vec2(600.0, 60.0)),
+        ];
+        // A document shorter than the viewport is fully visible; the
+        // bottom rule must not steal the highlight from the top section.
+        assert_eq!(active_section(&rects, 8.0, 400.0), Some(0));
+    }
+
+    #[test]
+    fn active_section_single_section_at_the_top() {
+        let rects = vec![egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(600.0, 300.0),
+        )];
+        assert_eq!(active_section(&rects, 0.0, 300.0), Some(0));
+    }
+
+    #[test]
+    fn active_section_of_nothing_is_none() {
+        assert_eq!(active_section(&[], 0.0, 300.0), None);
     }
 }

@@ -1,5 +1,6 @@
 mod app;
 mod document;
+mod fonts;
 mod icons;
 mod search;
 mod source;
@@ -30,6 +31,7 @@ fn main() -> eframe::Result<()> {
         "rumd",
         options,
         Box::new(move |cc| {
+            fonts::install(&cc.egui_ctx);
             let mut app = app::App::new(path);
             app.set_prefs_file(app::prefs_path());
             app.load_prefs();

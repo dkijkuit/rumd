@@ -18,6 +18,10 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 
 [patch.crates-io]
 egui_commonmark = { path = "vendor/egui_commonmark" }
+# Vendored with typography patches: Typora-style heading ramp and real
+# bold/italic families, explicit line heights, GitHub-style blockquote,
+# code block, bullets and rules (see vendor/egui_commonmark_backend).
+egui_commonmark_backend = { path = "vendor/egui_commonmark_backend" }
 
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["snapshot", "wgpu"] }

@@ -351,17 +351,27 @@ impl List {
         self.items.len() == 1
     }
 
-    pub fn start_item(&mut self, ui: &mut egui::Ui, options: &CommonMarkOptions) {
+    pub fn start_item(&mut self, ui: &mut egui::Ui, _options: &CommonMarkOptions) {
         // To ensure that newlines are only inserted within the list and not before it
         if self.has_list_begun {
-            newline(ui);
+            // rumd patch: a small gap between items (GitHub ≈ 4px), not
+            // a full blank line.
+            newline_gap(
+                ui,
+                egui_commonmark_backend::typography::gap_list_item(ui),
+            );
         } else {
             self.has_list_begun = true;
         }
 
         let len = self.items.len();
         if let Some(item) = self.items.last_mut() {
-            ui.label(" ".repeat((len - 1) * options.indentation_spaces));
+            // rumd patch: pixel-based nesting indent (a space run is
+            // both fragile and too narrow for nested content to line up
+            // with its marker).
+            let indent = (len - 1) as f32
+                * egui_commonmark_backend::typography::list_indent(ui);
+            ui.allocate_exact_size(egui::vec2(indent, 0.0), egui::Sense::hover());
 
             if let Some(number) = &mut item.current_number {
                 number_point(ui, &number.to_string());
@@ -382,7 +392,12 @@ impl List {
         self.items.pop();
 
         if self.items.is_empty() && insert_newline {
-            newline(ui);
+            // rumd patch: end the list with a block gap like every other
+            // block element.
+            newline_gap(
+                ui,
+                egui_commonmark_backend::typography::gap_block_end(ui),
+            );
         }
     }
 }

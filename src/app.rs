@@ -179,6 +179,9 @@ pub struct App {
     /// Cached table of contents for the current document text; recomputed
     /// wherever `sections` is.
     toc_entries: Vec<toc::TocEntry>,
+    /// Section currently in view in the rendered pane; highlights its ToC
+    /// row. Holds its last value in Source mode (no rendered view).
+    active_section: Option<usize>,
     /// Which ToC groups (by outline path) are collapsed.
     toc_collapsed: std::collections::HashSet<toc::EntryPath>,
     /// ToC sidebar visibility; toggled with Ctrl/Cmd+T or the toolbar icon.
@@ -225,6 +228,7 @@ impl App {
             sections: Vec::new(),
             pending_render_jump: None,
             toc_entries: Vec::new(),
+            active_section: None,
             toc_collapsed: std::collections::HashSet::new(),
             toc_open: false,
             pending_toc_jump: None,
@@ -492,6 +496,7 @@ impl App {
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        crate::fonts::install_once(&ctx);
         self.handle_events(&ctx);
         self.poll_watcher(&ctx);
         self.apply_theme(&ctx);
@@ -622,6 +627,11 @@ impl App {
                     });
                 }
             }
+            // In Source mode the rendered view is not on screen, so the
+            // highlight holds the last value the rendered view reported.
+            if self.mode != ViewMode::Source {
+                self.active_section = self.rendered.active_section();
+            }
             self.pending_render_jump = render_jump;
             if edited {
                 self.on_document_edited(edit_cursor);
@@ -710,18 +720,44 @@ impl App {
             ctx.set_theme(self.theme_pref);
             self.applied_theme = Some(self.theme_pref);
         }
+        // rumd patch: GitHub/Typora palette. Set every frame (cheap) so
+        // an OS theme flip mid-session cannot revert to raw egui colors.
+        let light = ctx.theme() == egui::Theme::Light;
+        let (text, link) = if light {
+            (
+                egui::Color32::from_rgb(0x1f, 0x23, 0x28), // #1f2328
+                egui::Color32::from_rgb(0x09, 0x69, 0xda), // #0969da
+            )
+        } else {
+            (
+                egui::Color32::from_rgb(0xe6, 0xed, 0xf3), // #e6edf3
+                egui::Color32::from_rgb(0x4d, 0xa3, 0xff), // GitHub dark link
+            )
+        };
+        ctx.all_styles_mut(|style| {
+            style.visuals.hyperlink_color = link;
+            // Body text (labels default to the noninteractive stroke) and
+            // strong text (the `active` stroke, which egui's
+            // `RichText::strong` brightens) both settle on the GitHub
+            // body color — with real bold families, weight does the work.
+            style.visuals.widgets.noninteractive.fg_stroke.color = text;
+            style.visuals.widgets.active.fg_stroke.color = text;
+        });
     }
 
     fn apply_typography(ctx: &egui::Context) {
         ctx.all_styles_mut(|style| {
             style.text_styles = std::collections::BTreeMap::from([
-                (egui::TextStyle::Small, egui::FontId::proportional(12.0)),
+                (egui::TextStyle::Small, egui::FontId::proportional(13.0)),
                 (egui::TextStyle::Body, egui::FontId::proportional(16.0)),
                 (egui::TextStyle::Button, egui::FontId::proportional(14.0)),
                 (egui::TextStyle::Heading, egui::FontId::proportional(28.0)),
                 (egui::TextStyle::Monospace, egui::FontId::monospace(14.0)),
             ]);
-            style.spacing.item_spacing = egui::vec2(8.0, 10.0);
+            // rumd patch: vertical spacing is explicit in the vendored
+            // markdown renderer; keep the app chrome at a comfortable
+            // default without inflating markdown gaps.
+            style.spacing.item_spacing = egui::vec2(8.0, 8.0);
         });
     }
 
@@ -1176,7 +1212,12 @@ impl App {
             .min_size(160.0)
             .max_size(400.0)
             .show(ui, |ui| {
-                let intents = toc::show_panel(ui, &self.toc_entries, &self.toc_collapsed);
+                let intents = toc::show_panel(
+                    ui,
+                    &self.toc_entries,
+                    &self.toc_collapsed,
+                    self.active_section,
+                );
                 if let Some(path) = intents.toggled
                     && !self.toc_collapsed.remove(&path)
                 {
@@ -1749,9 +1790,7 @@ mod tests {
         }
         let out_dir = std::env::var("RUMD_CAPTURE_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("website/assets")
-            });
+            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("website/assets"));
         std::fs::create_dir_all(&out_dir).unwrap();
 
         // A friendly dummy name for the website title bar; kept out of
@@ -1791,7 +1830,9 @@ mod tests {
             harness.run();
             harness.run();
             let image = harness.render().expect("screenshot render must succeed");
-            image.save(out_dir.join(name)).expect("screenshot save must succeed");
+            image
+                .save(out_dir.join(name))
+                .expect("screenshot save must succeed");
         };
 
         capture(
@@ -3193,6 +3234,36 @@ mod tests {
     /// entry (same text) while the sidebar is open.
     fn toc_entry_count(harness: &Harness, label: &str) -> usize {
         harness.query_all_by_label(label).count() - 1
+    }
+
+    #[test]
+    fn toc_jump_marks_its_section_active() {
+        let doc = temp_path("tocactive.md");
+        let _cwd = CWD_LOCK.lock().unwrap();
+        // Tall enough that the jump really scrolls: a document that fits
+        // the viewport has no "section in view" to speak of.
+        let filler = "filler line\n\n".repeat(40);
+        let md = format!("# Top\n\n{filler}\n## Sub\n\n{filler}\n### Deep\n\n{filler}");
+        std::fs::write(&doc, &md).unwrap();
+        let app = Rc::new(RefCell::new(App::new(None)));
+        app.borrow_mut().open_path(&doc);
+        let app_for_ui = app.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1000.0, 600.0))
+            .build_ui(move |ui| {
+                app_for_ui.borrow_mut().show(ui);
+            });
+        harness.run_steps(2);
+        let sub = md.find("## Sub").unwrap();
+        app.borrow_mut().toc_open = true;
+        app.borrow_mut().pending_toc_jump = Some(sub);
+        harness.run_steps(6);
+        assert_eq!(
+            app.borrow().active_section,
+            Some(1),
+            "the section the jump landed on must become the active one"
+        );
+        std::fs::remove_file(&doc).unwrap();
     }
 
     #[test]

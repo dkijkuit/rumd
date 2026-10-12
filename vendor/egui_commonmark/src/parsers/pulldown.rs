@@ -79,14 +79,22 @@ impl Newline {
     }
 
     pub fn try_insert_start(&self, ui: &mut Ui) {
+        // rumd patch: blocks are separated by a small margin row, not a
+        // full blank line (see typography::gap_block_start).
         if self.can_insert_start() {
-            newline(ui);
+            newline_gap(
+                ui,
+                egui_commonmark_backend::typography::gap_block_start(ui),
+            );
         }
     }
 
     pub fn try_insert_end(&self, ui: &mut Ui) {
         if self.can_insert_end() {
-            newline(ui);
+            newline_gap(
+                ui,
+                egui_commonmark_backend::typography::gap_block_end(ui),
+            );
         }
     }
 }
@@ -111,6 +119,9 @@ pub struct CommonMarkViewerInternal {
     is_list_item: bool,
     def_list: DefinitionList,
     is_table: bool,
+    /// rumd patch: heading level (0 = h1) whose h1/h2 bottom border is
+    /// still awaited; set on heading start, painted on heading end.
+    pending_heading_border: Option<u8>,
     is_blockquote: bool,
     checkbox_events: Vec<CheckboxClickEvent>,
     deferred_scroll_to_heading: Option<String>,
@@ -135,6 +146,7 @@ impl CommonMarkViewerInternal {
             code_block: None,
             html_block: String::new(),
             is_table: false,
+            pending_heading_border: None,
             is_blockquote: false,
             checkbox_events: Vec::new(),
             deferred_scroll_to_heading: None,
@@ -171,6 +183,10 @@ impl CommonMarkViewerInternal {
         let layout = egui::Layout::left_to_right(egui::Align::BOTTOM).with_main_wrap(true);
 
         let re = ui.allocate_ui_with_layout(egui::vec2(max_width, 0.0), layout, |ui| {
+            // rumd patch: horizontal spacing comes from explicit spaces
+            // in the text flow; vertical spacing from explicit gap rows
+            // (see Newline). Default item spacing would double every gap.
+            ui.spacing_mut().item_spacing.y = 0.0;
             ui.spacing_mut().item_spacing.x = 0.0;
             let height = ui.text_style_height(&TextStyle::Body);
             ui.set_row_height(height);
@@ -273,6 +289,8 @@ impl CommonMarkViewerInternal {
 
                 let max_width = options.max_width(ui);
                 ui.allocate_ui_with_layout(egui::vec2(max_width, 0.0), layout, |ui| {
+                    // rumd patch: see the non-scrollable path.
+                    ui.spacing_mut().item_spacing.y = 0.0;
                     ui.spacing_mut().item_spacing.x = 0.0;
                     let scroll_cache = scroll_cache(cache, &source_id);
 
@@ -506,7 +524,22 @@ impl CommonMarkViewerInternal {
             let id = ui.id().with("_table").with(self.curr_table);
             self.curr_table += 1;
 
-            egui::Frame::group(ui.style()).show(ui, |ui| {
+            // rumd patch: GitHub-style table chrome. The header band is
+            // painted behind the text (shape slot allocated before the
+            // grid, filled after — same trick as rumd's search
+            // highlights), and each row ends in a hairline. No zebra
+            // stripes; cells get breathing room via grid spacing and
+            // per-cell padding.
+            let header_band_slot = ui.painter().add(egui::Shape::Noop);
+            let mut header_cells: Vec<egui::Rect> = Vec::new();
+            let mut row_bottoms: Vec<f32> = Vec::new();
+            let mut row_cell_rects: Vec<egui::Rect> = Vec::new();
+            let border = egui_commonmark_backend::typography::palette(ui).border;
+
+            egui::Frame::new()
+                .stroke(egui::Stroke::new(1.0, border))
+                .corner_radius(6.0)
+                .show(ui, |ui| {
                 // rumd patch: force the frame to the container's width: a
                 // table must fill the line it now owns. `available_width`
                 // already accounts for indents (lists, blockquotes); the
@@ -515,27 +548,32 @@ impl CommonMarkViewerInternal {
                 // are laid out in non-wrapping horizontal Uis, which would
                 // otherwise resolve text to TextWrapMode::Extend and ignore
                 // the widths above.
-                let stroke = ui.style().visuals.widgets.noninteractive.bg_stroke.width;
-                // Frame::group chrome: inner_margin(6) plus the stroke on
-                // both sides.
+                let stroke = 1.0;
                 let inner_width = ui
                     .available_width()
-                    .min(max_width - 12.0 - 2.0 * stroke);
+                    .min(max_width - 2.0 * stroke);
                 ui.set_min_width(inner_width);
 
                 let Table { header, rows } = parse_table(events);
 
                 let column_count = header.len().max(1);
-                let column_width =
-                    (inner_width / column_count as f32).max(ui.spacing().interact_size.x);
+                // rumd patch: the grid's horizontal spacing is part of
+                // the table's width budget; subtract it from the equal
+                // column share so the whole grid fits the column.
+                let grid_spacing = 12.0;
+                let column_width = ((inner_width - grid_spacing * (column_count - 1) as f32)
+                    / column_count as f32)
+                    .max(ui.spacing().interact_size.x);
 
                 egui::Grid::new(id)
-                    .striped(true)
+                    .spacing(egui::vec2(grid_spacing, 0.0))
                     .num_columns(column_count)
                     .show(ui, |ui| {
+                        self.text_style.table_header = true;
                         for (col_index, col) in header.into_iter().enumerate() {
                             ui.vertical(|ui| {
                                 rumd_cell_layout(ui, col_index, column_count, column_width);
+                                ui.add_space(5.0);
                                 for (e, src_span) in col {
                                     let tmp_start = std::mem::replace(
                                         &mut self.line.should_start_newline,
@@ -549,12 +587,16 @@ impl CommonMarkViewerInternal {
                                     self.line.should_start_newline = tmp_start;
                                     self.line.should_end_newline = tmp_end;
                                 }
+                                ui.add_space(5.0);
+                                header_cells.push(ui.min_rect());
                             });
                         }
+                        self.text_style.table_header = false;
 
                         ui.end_row();
 
                         for row in rows {
+                            row_cell_rects.clear();
                             for (col_index, col) in row.into_iter().enumerate() {
                                 ui.vertical(|ui| {
                                     rumd_cell_layout(
@@ -563,6 +605,7 @@ impl CommonMarkViewerInternal {
                                         column_count,
                                         column_width,
                                     );
+                                    ui.add_space(5.0);
                                     for (e, src_span) in col {
                                         let tmp_start = std::mem::replace(
                                             &mut self.line.should_start_newline,
@@ -576,15 +619,56 @@ impl CommonMarkViewerInternal {
                                         self.line.should_start_newline = tmp_start;
                                         self.line.should_end_newline = tmp_end;
                                     }
+                                    ui.add_space(6.0);
+                                    row_cell_rects.push(ui.min_rect());
                                 });
                             }
 
                             ui.end_row();
+                            row_bottoms.push(
+                                row_cell_rects
+                                    .iter()
+                                    .map(|rect| rect.bottom())
+                                    .fold(f32::MIN, f32::max),
+                            );
                         }
                     });
 
                 ui.expand_to_include_x(ui.max_rect().right());
             });
+
+            // Header band behind the header text: fill the union of the
+            // header cells' rects (bounded by the grid's full width).
+            if let (Some(first), Some(last)) = (header_cells.first(), header_cells.last()) {
+                let left = ui.min_rect().left().min(first.left());
+                let right = ui.min_rect().right().max(last.right());
+                let band = egui::Rect::from_min_max(
+                    egui::pos2(left, first.top()),
+                    egui::pos2(right, last.bottom()),
+                );
+                ui.painter().set(
+                    header_band_slot,
+                    egui::Shape::rect_filled(
+                        band,
+                        0.0,
+                        egui_commonmark_backend::typography::palette(ui).code_bg,
+                    ),
+                );
+            }
+            // Hairline between each pair of rows (not after the last).
+            for (i, bottom) in row_bottoms.iter().enumerate() {
+                if i + 1 == row_bottoms.len() {
+                    break;
+                }
+                let rect = ui.min_rect();
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(rect.left() + 6.0, bottom + 3.0),
+                        egui::pos2(rect.right() - 6.0, bottom + 3.0),
+                    ],
+                    egui::Stroke::new(1.0, border),
+                );
+            }
 
             self.is_table = false;
             if events.peek().is_none() {
@@ -632,7 +716,14 @@ impl CommonMarkViewerInternal {
             pulldown_cmark::Event::SoftBreak => {
                 soft_break(ui);
             }
-            pulldown_cmark::Event::HardBreak => newline(ui),
+            pulldown_cmark::Event::HardBreak => {
+                // rumd patch: a hard break continues the paragraph, so it
+                // gets a full body line, not a block gap.
+                newline_gap(
+                    ui,
+                    egui_commonmark_backend::typography::body_line_height(ui),
+                );
+            }
             pulldown_cmark::Event::Rule => {
                 self.line.try_insert_start(ui);
                 rule(ui, self.line.can_insert_end());
@@ -674,7 +765,10 @@ impl CommonMarkViewerInternal {
         } else if let Some(link) = &mut self.link {
             link.text.push(rich_text);
         } else {
-            ui.label(rich_text);
+            // rumd patch: explicit line height (Typora-like leading) —
+            // egui's font-metric rows are far too tight for prose.
+            let line_height = self.text_style.line_height(ui);
+            egui_commonmark_backend::typography::text_label(ui, rich_text, line_height);
         }
     }
 
@@ -700,15 +794,25 @@ impl CommonMarkViewerInternal {
 
                 // Headings should always insert a newline even if it is at the start.
                 // Whether this is okay in all scenarios is a different question.
-                newline(ui);
-                self.text_style.heading = Some(match level {
+                // rumd patch: the break is a small gap row like every
+                // other block separator.
+                newline_gap(
+                    ui,
+                    egui_commonmark_backend::typography::gap_block_start(ui),
+                );
+                let level_index = match level {
                     HeadingLevel::H1 => 0,
                     HeadingLevel::H2 => 1,
                     HeadingLevel::H3 => 2,
                     HeadingLevel::H4 => 3,
                     HeadingLevel::H5 => 4,
                     HeadingLevel::H6 => 5,
-                });
+                };
+                // rumd patch: Typora's GitHub theme underlines h1 and h2.
+                if level_index < 2 {
+                    self.pending_heading_border = Some(level_index);
+                }
+                self.text_style.heading = Some(level_index);
             }
 
             // deliberately not using the built in alerts from pulldown-cmark as
@@ -823,6 +927,22 @@ impl CommonMarkViewerInternal {
                 self.line.try_insert_end(ui);
             }
             pulldown_cmark::TagEnd::Heading { .. } => {
+                // rumd patch: Typora's GitHub theme underlines h1/h2 with
+                // a hairline across the reading column.
+                if let Some(_level) = self.pending_heading_border.take() {
+                    let bottom = ui.next_widget_position().y;
+                    let rect = ui.max_rect();
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(rect.left(), bottom + 3.0),
+                            egui::pos2(rect.right(), bottom + 3.0),
+                        ],
+                        egui::Stroke::new(
+                            1.0,
+                            egui_commonmark_backend::typography::palette(ui).border,
+                        ),
+                    );
+                }
                 self.line.try_insert_end(ui);
                 self.text_style.heading = None;
             }
