@@ -211,12 +211,15 @@ pub fn show_panel(
 }
 
 /// Width of the chevron gutter every row reserves, so titles align
-/// between group and leaf entries.
-const GUTTER: f32 = 16.0;
+/// between group and leaf entries. The glyph is sized to fit inside it,
+/// keeping `CHEVRON_TEXT_GAP` of clear space before the title.
+const GUTTER: f32 = 20.0;
 /// Indentation per heading level.
 const INDENT: f32 = 14.0;
 /// Corner rounding of the row hover/selection fill.
 const ROW_ROUNDING: f32 = 4.0;
+/// Breathing room kept between the chevron glyph and the row title.
+const CHEVRON_TEXT_GAP: f32 = 4.0;
 
 /// Draw a row's title, left-aligned and vertically centered in the row,
 /// elided with an ellipsis when it does not fit.
@@ -281,8 +284,11 @@ fn chevron(ui: &mut egui::Ui, rect: egui::Rect, expanded: bool, title: &str) -> 
     };
     // Painted instead of typeset: the default font stack has no ▸/▾
     // glyphs (they render as tofu squares). Same approach as icons.rs.
+    // The glyph scales with the row height but is capped so it stays
+    // inside the gutter with CHEVRON_TEXT_GAP to spare before the
+    // title; otherwise it creeps onto (or past) the text.
     let c = rect.center();
-    let w = rect.height() * 0.42;
+    let w = (rect.height() * 0.42).min(GUTTER / 2.0 - CHEVRON_TEXT_GAP);
     let points = if expanded {
         vec![
             egui::pos2(c.x - w, c.y - w * 0.6),
@@ -548,6 +554,38 @@ mod tests {
             text_color_in(&harness, c),
             Some(visuals.selection.stroke.color),
             "the active row's title must use the accent color"
+        );
+    }
+
+    #[test]
+    fn chevron_keeps_a_gap_from_the_title() {
+        let entries = headings("# Top\n\n## Sub\n\nbody\n");
+        let harness = render(&entries, None);
+        let row = harness.get_by_label("Top").rect();
+        let chev = harness.get_by_label("Collapse Top").rect();
+        let mut triangle_right = f32::MIN;
+        let mut title_left = f32::MAX;
+        for clipped in &harness.output().shapes {
+            match &clipped.shape {
+                egui::Shape::Path(poly)
+                    if poly.points.len() == 3
+                        && poly.fill != egui::Color32::TRANSPARENT
+                        && poly.points.iter().all(|p| chev.expand(2.0).contains(*p)) =>
+                {
+                    triangle_right = triangle_right.max(
+                        poly.points.iter().map(|p| p.x).fold(f32::MIN, f32::max),
+                    );
+                }
+                egui::Shape::Text(text) if row.contains_rect(text.visual_bounding_rect()) => {
+                    title_left = title_left.min(text.visual_bounding_rect().left());
+                }
+                _ => {}
+            }
+        }
+        let gap = title_left - triangle_right;
+        assert!(
+            gap >= CHEVRON_TEXT_GAP - 0.05,
+            "chevron-to-title gap {gap:.2} must be at least {CHEVRON_TEXT_GAP}"
         );
     }
 
