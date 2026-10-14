@@ -26,6 +26,9 @@
     <binary>rumd</binary>
   </provides>
   <releases>
+    <release version="0.1.4" date="2026-10-14">
+      <description><p>Performance: large documents open without freezing and stay smooth while scrolling, in both the rendered and the source view. Code fences named by language (```rust, ```python) now get syntax highlighting.</p></description>
+    </release>
     <release version="0.1.3" date="2026-10-13">
       <description><p>Typora-grade rendered typography, ToC active-section highlighting, and chevron spacing fixes.</p></description>
     </release>
