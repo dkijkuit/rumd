@@ -41,7 +41,6 @@ pub fn active_section(rects: &[egui::Rect], view_top: f32, view_bottom: f32) -> 
 }
 
 /// Renders markdown into egui widgets. Keeps a parse cache between frames.
-#[derive(Default)]
 pub struct RenderedView {
     cache: CommonMarkCache,
     /// Last laid-out height of each section. Offscreen sections are
@@ -49,7 +48,16 @@ pub struct RenderedView {
     /// shaped: egui's galley cache only survives a single frame, so
     /// without skipping, every frame (and every Rendered<->Split toggle,
     /// which re-shapes at a new wrap width) re-layouts the whole document.
+    /// Heights start as byte-proportional estimates (see `px_per_byte`)
+    /// and are replaced by exact measurements as sections come near the
+    /// viewport — laying out every section up front is what made opening
+    /// large documents freeze the app.
     section_heights: Vec<Option<f32>>,
+    /// Learned points-per-byte of measured sections, seeded with a typical
+    /// prose density; drives the placeholder height of sections that have
+    /// not been shaped yet, keeping the scroll extent plausible from the
+    /// first frame.
+    px_per_byte: f32,
     /// Jump awaiting its exact scroll: set when a jump is consumed, kept
     /// until the current match has been painted (the downward paint margin
     /// makes that happen within a frame or two) and scrolled to exactly.
@@ -69,6 +77,12 @@ pub struct RenderedView {
     active_section: Option<usize>,
 }
 
+/// Seed for [`RenderedView::px_per_byte`]: rendered markdown with rumd's
+/// Typora-style leading runs ~0.7-0.8 points per source byte for prose
+/// with lists and code; the estimate self-corrects as sections are
+/// measured.
+const PX_PER_BYTE_SEED: f32 = 0.7;
+
 /// What to highlight in the rendered view while the find bar is open.
 pub struct SearchHighlight {
     pub query: String,
@@ -76,6 +90,20 @@ pub struct SearchHighlight {
     pub section: usize,
     /// Byte offset of the current match in the raw markdown.
     pub match_byte: usize,
+}
+
+impl Default for RenderedView {
+    fn default() -> Self {
+        Self {
+            cache: CommonMarkCache::default(),
+            section_heights: Vec::new(),
+            px_per_byte: PX_PER_BYTE_SEED,
+            scroll_target: None,
+            toc_target: None,
+            toc_target_top: None,
+            active_section: None,
+        }
+    }
 }
 
 impl RenderedView {
@@ -87,6 +115,7 @@ impl RenderedView {
     /// changes, so placeholder heights never come from the old text).
     pub fn clear(&mut self) {
         self.section_heights.clear();
+        self.px_per_byte = PX_PER_BYTE_SEED;
         self.toc_target = None;
         self.toc_target_top = None;
     }
@@ -131,13 +160,28 @@ impl RenderedView {
         // CentralPanel clips overflow, so long documents need a ScrollArea.
         // (egui_commonmark's show_scrollable assumes static markdown and
         // requires manual cache clearing on every change.)
-        // Paint content well below the viewport: matches that are off
-        // screen are normally culled, which would leave the jump's estimate
-        // as the best available position. With the extra paint margin the
-        // current match's exact rect becomes known and the scroll can be
-        // corrected on the next frame. (Downward only: content above the
-        // viewport would paint over the panels.)
-        let paint_margin = egui::vec2(0.0, ui.available_height() * 3.0);
+        // While a jump is being steered, paint content well below the
+        // viewport: the current match is off screen at first, and with the
+        // extra paint margin its exact rect becomes known so the scroll
+        // can be corrected on the next frame. (Downward only: content
+        // above the viewport would paint over the panels.) When nothing
+        // is being steered the margin buys nothing — every laid-out
+        // section is parsed, highlighted and re-shaped every frame — so
+        // it collapses to zero.
+        let chasing = self.scroll_target.is_some()
+            || self.toc_target.is_some()
+            || pending_jump.is_some()
+            || toc_jump.is_some();
+        let paint_margin = if chasing {
+            egui::vec2(0.0, ui.available_height() * 3.0)
+        } else {
+            egui::vec2(0.0, 0.0)
+        };
+        // Same reasoning for the culling window: the wide 3-viewport band
+        // exists so a steering jump discovers content beyond the fold;
+        // idle reading and plain scrolling only need a small look-ahead to
+        // have sections materialized before they scroll into view.
+        let window_factor = if chasing { 3.0 } else { 1.0 };
         // The ScrollArea derives its persisted state id from the same salt,
         // so the ToC jump can write the scroll offset directly (see below).
         let scroll_id = ui.make_persistent_id(egui::IdSalt::new("rumd_rendered_scroll"));
@@ -194,30 +238,37 @@ impl RenderedView {
                 if self.section_heights.len() != sections.len() {
                     self.section_heights = vec![None; sections.len()];
                 }
+                // One body line: the floor for a placeholder, so empty or
+                // tiny sections still reserve a sane amount of space.
+                let min_row = ui.text_style_height(&egui::TextStyle::Body);
                 for (i, range) in sections.iter().enumerate() {
                     // Skip sections the viewport cannot reach: placeholders
-                    // of the remembered height keep the scroll extent (and
-                    // thus the scrollbar) honest without shaping any text.
-                    // Search re-steers across frames, so estimates are fine
-                    // for sections it has not reached yet.
-                    let known_height = self.section_heights[i];
+                    // keep the scroll extent (and thus the scrollbar)
+                    // honest without shaping any text. Unmeasured sections
+                    // use a byte-proportional estimate, refined to exact
+                    // measurements as they come near the viewport — the
+                    // alternative (measuring everything up front) is the
+                    // freeze when opening large documents. Search and ToC
+                    // jumps re-steer across frames, so estimates are fine
+                    // for sections they have not reached yet.
+                    let height_hint = self.section_heights[i].unwrap_or_else(|| {
+                        (range.len() as f32 * self.px_per_byte).max(min_row)
+                    });
                     let is_toc_target = *toc_jump == Some(i) || self.toc_target == Some(i);
                     // The clip rect stays screen-fixed while scrolling
                     // (unlike max_rect, which travels with the content).
                     let clip = inner.clip_rect();
-                    let margin = clip.height() * 3.0;
+                    let margin = clip.height() * window_factor;
                     let vis_top = clip.top() - margin;
                     let vis_bottom = clip.bottom() + margin;
                     let top = inner.next_widget_position().y;
-                    let needed = known_height.is_none()
-                        || *pending_jump == Some(i)
+                    let needed = *pending_jump == Some(i)
                         || is_toc_target
                         || search.is_some_and(|s| s.section == i)
-                        || (top <= vis_bottom && known_height.is_none_or(|h| top + h >= vis_top));
+                        || (top <= vis_bottom && top + height_hint >= vis_top);
                     if !needed {
-                        let height = known_height.unwrap_or_default();
                         let (_, response) = inner.allocate_exact_size(
-                            egui::vec2(inner.available_width(), height),
+                            egui::vec2(inner.available_width(), height_hint),
                             egui::Sense::hover(),
                         );
                         section_rects.push(response.rect);
@@ -249,7 +300,13 @@ impl RenderedView {
                     // `new_child` does not advance the parent cursor; claim
                     // the section's rect so the next section stacks below it.
                     inner.allocate_rect(section_ui.min_rect(), egui::Sense::hover());
-                    self.section_heights[i] = Some(section_ui.min_rect().height());
+                    let measured = section_ui.min_rect().height();
+                    self.section_heights[i] = Some(measured);
+                    // Blend the measured density into the estimate so
+                    // placeholder heights track this document's style
+                    // (clamped: a one-line heading must not spike it).
+                    let ratio = (measured / (range.len() as f32).max(1.0)).clamp(0.05, 5.0);
+                    self.px_per_byte = self.px_per_byte * 0.8 + ratio * 0.2;
                     section_rects.push(section_ui.min_rect());
                     if *pending_jump == Some(i) {
                         *pending_jump = None;
@@ -264,9 +321,9 @@ impl RenderedView {
                     // scroll offset is re-issued every frame until the
                     // layout around it is stable. Culled sections above
                     // materialize after the first scroll (their placeholders
-                    // start at height 0), which would otherwise leave the
-                    // landing position dependent on how much was measured
-                    // before the scroll.
+                    // are byte-proportional estimates), which would
+                    // otherwise leave the landing position dependent on how
+                    // much was measured before the scroll.
                     if is_toc_target {
                         *toc_jump = None;
                         toc_layout = Some(TocScroll {

@@ -7,6 +7,9 @@ mod source;
 mod toc;
 mod viewer;
 
+#[cfg(test)]
+mod perf_bench;
+
 use std::path::PathBuf;
 
 use eframe::egui;

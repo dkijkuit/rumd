@@ -419,35 +419,72 @@ impl CodeBlock {
 
     fn syntax_highlighting(
         &self,
-        cache: &CommonMarkCache,
+        cache: &mut CommonMarkCache,
         options: &CommonMarkOptions,
         extension: &str,
         ui: &Ui,
         text: &str,
     ) -> egui::text::LayoutJob {
-        if let Some(syntax) = cache.ps.find_syntax_by_extension(extension) {
-            let mut job = egui::text::LayoutJob::default();
-            let mut h = HighlightLines::new(syntax, cache.curr_theme(ui, options));
+        // rumd patch: resolve the fence language by extension first
+        // ("rs", "py", "sh"), then by language name/token ("rust",
+        // "python") so the common ```rust fences get real highlighting
+        // instead of falling back to the plain theme.
+        let syntax = cache
+            .ps
+            .find_syntax_by_extension(extension)
+            .or_else(|| cache.ps.find_syntax_by_token(extension));
+        let Some(syntax) = syntax else {
+            return simple_highlighting(ui, text, extension);
+        };
 
-            for line in LinesWithEndings::from(text) {
-                let ranges = h.highlight_line(line, &cache.ps).unwrap();
-                for v in ranges {
-                    let front = v.0.foreground;
-                    job.append(
-                        v.1,
-                        0.0,
-                        egui::TextFormat::simple(
-                            TextStyle::Monospace.resolve(ui.style()),
-                            syntect_color_to_egui(front),
-                        ),
-                    );
-                }
-            }
-
-            job
-        } else {
-            simple_highlighting(ui, text, extension)
+        // rumd patch: cache the highlighted job. Syntect parses the code
+        // with regexes per line, which costs milliseconds per block —
+        // doing that for every visible code block on every frame is what
+        // made large, code-heavy documents sluggish. The job only changes
+        // when the code, the resolved syntax, the theme, or the mono font
+        // size changes, so those fully key the cache.
+        let theme_name = options.curr_theme(ui).to_string();
+        let mono_size = ui
+            .style()
+            .text_styles
+            .get(&TextStyle::Monospace)
+            .map_or(14.0, |d| d.size);
+        let key = egui::util::hash((
+            text,
+            syntax.name.as_str(),
+            theme_name.as_str(),
+            mono_size.to_bits(),
+        ));
+        if let Some(job) = cache.highlight_cache.get(&key) {
+            return job.clone();
         }
+
+        let mut job = egui::text::LayoutJob::default();
+        let mut h = HighlightLines::new(syntax, cache.curr_theme(ui, options));
+
+        for line in LinesWithEndings::from(text) {
+            let ranges = h.highlight_line(line, &cache.ps).unwrap();
+            for v in ranges {
+                let front = v.0.foreground;
+                job.append(
+                    v.1,
+                    0.0,
+                    egui::TextFormat::simple(
+                        TextStyle::Monospace.resolve(ui.style()),
+                        syntect_color_to_egui(front),
+                    ),
+                );
+            }
+        }
+
+        // Bound the cache: documents are viewed one at a time, so the
+        // working set is tiny; a cap just guards pathological sessions.
+        if cache.highlight_cache.len() >= 256 {
+            cache.highlight_cache.clear();
+        }
+        cache.highlight_cache.insert(key, job.clone());
+
+        job
     }
 }
 
@@ -503,6 +540,15 @@ pub struct CommonMarkCache {
     scroll_to_id_target: Option<String>,
     link_hooks: HashMap<String, bool>,
 
+    /// rumd patch: highlighted code-block layout jobs, keyed by
+    /// (content, syntax name, theme name, mono size). Syntect highlighting
+    /// runs per line regex parsing; caching the finished job keeps it off
+    /// the per-frame path (see `CodeBlock::syntax_highlighting`). Keys
+    /// fully determine the value, so sharing one cache across viewers is
+    /// safe.
+    #[cfg(feature = "better_syntax_highlighting")]
+    highlight_cache: HashMap<u64, egui::text::LayoutJob>,
+
     scroll: HashMap<egui::Id, ScrollableCache>,
     pub(self) has_installed_loaders: bool,
 }
@@ -515,6 +561,8 @@ impl Default for CommonMarkCache {
             ps: SyntaxSet::load_defaults_newlines(),
             #[cfg(feature = "better_syntax_highlighting")]
             ts: ThemeSet::load_defaults(),
+            #[cfg(feature = "better_syntax_highlighting")]
+            highlight_cache: HashMap::new(),
             link_hooks: HashMap::new(),
             scroll: Default::default(),
             scroll_to_id_target: None,

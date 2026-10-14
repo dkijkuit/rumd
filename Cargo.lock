@@ -991,8 +991,6 @@ dependencies = [
 [[package]]
 name = "egui_code_editor"
 version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98493866b1b41f71c5be08ead53cfa8a86f7a799b1b5f65f02b239947fea6dc5"
 dependencies = [
  "egui",
  "opener",
@@ -3183,6 +3181,7 @@ dependencies = [
  "egui_kittest",
  "image",
  "notify",
+ "pulldown-cmark",
  "rfd",
  "winit",
 ]

@@ -9,7 +9,10 @@ eframe = "0.36"
 # Vendored with a small patch: tables cap column width so wide tables wrap
 # inside the reading column instead of overflowing it (see vendor/egui_commonmark).
 egui_commonmark = { version = "0.25", features = ["better_syntax_highlighting"] }
-egui_code_editor = "0.4"
+# Vendored with a small patch: the highlight cache survives idle frames
+# (TTL) instead of being rebuilt every frame, which is what made the
+# source view of large files slow (see vendor/egui_code_editor).
+egui_code_editor = { version = "0.4", path = "vendor/egui_code_editor" }
 notify = "8"
 rfd = "0.17"
 # Backend forcing for drag-and-drop (winit 0.30 has no Wayland DnD support)
@@ -22,9 +25,12 @@ egui_commonmark = { path = "vendor/egui_commonmark" }
 # bold/italic families, explicit line heights, GitHub-style blockquote,
 # code block, bullets and rules (see vendor/egui_commonmark_backend).
 egui_commonmark_backend = { path = "vendor/egui_commonmark_backend" }
+# Vendored with a TTL highlight cache (see vendor/egui_code_editor).
+egui_code_editor = { path = "vendor/egui_code_editor" }
 
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["snapshot", "wgpu"] }
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [profile.release]
 strip = true
