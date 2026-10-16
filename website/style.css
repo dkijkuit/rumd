@@ -435,6 +435,16 @@ kbd {
 }
 .note strong { display: block; color: var(--text); margin-bottom: 0.15rem; }
 
+.flatpak-panel {
+  border-color: rgba(180, 83, 9, 0.4);
+  background:
+    linear-gradient(rgba(180, 83, 9, 0.05), rgba(180, 83, 9, 0.05)),
+    var(--surface);
+  margin: 1.4rem 0 1rem;
+}
+.flatpak-panel p { margin-bottom: 0.2rem; }
+.flatpak-panel pre { margin: 0.6rem 0 0.2rem; }
+
 .fine {
   color: var(--muted);
   font-size: 0.88rem;

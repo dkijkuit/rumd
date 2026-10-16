@@ -219,11 +219,28 @@
 <section id="install">
   <p class="eyebrow">Up and running</p>
   <h2>Install</h2>
-  <p class="install-lead">Prebuilt binaries are attached to every release —
-  the latest is <strong>v0.1.4</strong>. Unpack the archive for your
-  platform and run <code>rumd</code>. No installer, no runtime, nothing to
-  configure. Every archive ships with a <code>.sha256</code> checksum.</p>
+  <p class="install-lead">On Linux, the recommended way to install rumd is
+  the Flatpak bundle attached to every release — the latest is
+  <strong>v0.1.4</strong>. Prefer a plain binary — or on macOS or Windows?
+  Prebuilt archives are attached to every release too: unpack the archive
+  for your platform and run <code>rumd</code>. No installer, no runtime,
+  nothing to configure. Every archive ships with a <code>.sha256</code>
+  checksum.</p>
 
+  <div class="note flatpak-panel">
+    <strong>Flatpak — recommended on Linux</strong>
+    <p>Download the bundle from the latest release and install it with
+    Flatpak. The first install pulls the
+    <code>org.freedesktop.Platform//26.08</code> runtime from Flathub
+    automatically:</p>
+    <pre><code>flatpak remote-add --if-not-exists flathub \
+  https://dl.flathub.org/repo/flathub.flatpakrepo
+wget https://github.com/dkijkuit/rumd/releases/download/v0.1.4/rumd-v0.1.4.flatpak
+flatpak install --user rumd-v0.1.4.flatpak
+flatpak run io.github.dkijkuit.rumd</code></pre>
+  </div>
+
+  <h3>Direct downloads</h3>
   <div class="downloads">
     <a class="download" href="https://github.com/dkijkuit/rumd/releases/download/v0.1.4/rumd-v0.1.4-x86_64-unknown-linux-gnu.tar.gz">
       <span class="dl-os">Linux</span>
@@ -245,8 +262,8 @@
 
   <div class="notes">
     <div class="note">
-      <strong>Linux</strong>
-      Needs the usual X11/Wayland client libraries
+      <strong>Linux (binary)</strong>
+      The raw binary needs the usual X11/Wayland client libraries
       (<code>libxkbcommon</code>, <code>libwayland-client</code>,
       <code>libX11</code>) — most desktops already have them.
     </div>
